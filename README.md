@@ -1,21 +1,291 @@
-# Backend Development Guide
+# Landlord No Agent - Backend API
 
-This document outlines all the backend features and APIs that need to be implemented to support the frontend application. The frontend is a comprehensive rental property management platform with three user roles: **Client**, **Landlord**, and **Admin**.
+A comprehensive backend API for the Landlord No Agent platform built with Node.js, Express, and MongoDB.
 
-## Quick Start
+## 🚀 Features
 
-### Prerequisites
-- Node.js (>=18.0.0)
-- MongoDB (local or cloud)
-- Environment variables configured
+- **Authentication & Authorization**: JWT-based auth with role-based access control
+- **User Management**: Registration, login, profile management, KYC verification
+- **Property Management**: CRUD operations, image uploads, search and filtering
+- **Application System**: Property applications with document uploads
+- **Payment Processing**: Stripe integration for application fees
+- **Messaging System**: Real-time communication between landlords and clients
+- **Maintenance Requests**: Property maintenance tracking
+- **Viewing Appointments**: Schedule and manage property viewings
+- **Admin Dashboard**: Comprehensive admin panel with analytics
+- **File Uploads**: Secure file upload system for documents and images
 
-### Installation & Setup
+## 🛠️ Tech Stack
 
-1. **Install dependencies:**
+- **Runtime**: Node.js
+- **Framework**: Express.js
+- **Database**: MongoDB with Mongoose
+- **Authentication**: JWT (JSON Web Tokens)
+- **File Uploads**: Multer
+- **Payments**: Stripe
+- **Email**: Nodemailer
+- **Security**: Helmet, CORS, Rate Limiting
+
+## 📦 Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd backend
+   ```
+
+2. **Install dependencies**
    ```bash
    npm install
    ```
 
+<<<<<<< HEAD
+3. **Environment Setup**
+   ```bash
+   cp env.local .env
+   # Edit .env with your configuration
+   ```
+
+4. **Start the server**
+   ```bash
+   # Development
+   npm run dev
+   
+   # Production
+   npm start
+   ```
+
+## 🔧 Environment Variables
+
+Create a `.env` file in the backend directory with the following variables:
+
+```env
+# Server Configuration
+PORT=5001
+NODE_ENV=development
+FRONTEND_URL=http://localhost:3000
+API_BASE_URL=http://localhost:5001
+
+# Database
+MONGODB_URI=mongodb://localhost:27017/landlord-no-agent
+
+# JWT Secret
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+
+# Email Configuration (for OTP)
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USER=your-email@gmail.com
+EMAIL_PASS=your-app-password
+
+# Stripe Configuration
+STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+
+# File Upload
+UPLOAD_PATH=./uploads
+MAX_FILE_SIZE=10485760
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+```
+
+## 📚 API Documentation
+
+### Authentication Endpoints
+
+- `POST /api/auth/register` - Register new user
+- `POST /api/auth/verify-email` - Verify email with OTP
+- `POST /api/auth/resend-otp` - Resend OTP
+- `POST /api/auth/login` - User login
+- `POST /api/auth/forgot-password` - Send password reset email
+- `POST /api/auth/reset-password` - Reset password
+- `GET /api/auth/me` - Get current user
+
+### Property Endpoints
+
+- `GET /api/properties` - Get all properties (with filters)
+- `GET /api/properties/:id` - Get single property
+- `POST /api/properties` - Create property (Landlord only)
+- `PUT /api/properties/:id` - Update property
+- `DELETE /api/properties/:id` - Delete property
+- `GET /api/properties/landlord/:landlordId` - Get landlord's properties
+
+### Application Endpoints
+
+- `GET /api/applications` - Get user's applications
+- `GET /api/applications/:id` - Get single application
+- `POST /api/applications` - Create application (Client only)
+- `PUT /api/applications/:id` - Update application
+- `DELETE /api/applications/:id` - Withdraw application
+
+### Payment Endpoints
+
+- `POST /api/payments/create-checkout` - Create Stripe checkout session
+- `POST /api/payments/webhook` - Stripe webhook handler
+- `GET /api/payments/history` - Get payment history
+- `GET /api/payments/:id` - Get payment details
+
+### Message Endpoints
+
+- `GET /api/messages/application/:applicationId` - Get conversation
+- `POST /api/messages` - Send message
+- `PUT /api/messages/:id/read` - Mark message as read
+- `PUT /api/messages/application/:applicationId/read-all` - Mark all as read
+
+### Admin Endpoints
+
+- `GET /api/admin/dashboard` - Get dashboard statistics
+- `GET /api/admin/users` - Get all users
+- `PUT /api/admin/users/:id/status` - Update user status
+- `GET /api/admin/properties` - Get all properties
+- `PUT /api/admin/properties/:id/verify` - Verify property
+
+### Upload Endpoints
+
+- `POST /api/upload/single` - Upload single file
+- `POST /api/upload/multiple` - Upload multiple files
+- `POST /api/upload/property-images` - Upload property images
+- `POST /api/upload/documents` - Upload documents
+- `DELETE /api/upload/:filename` - Delete file
+
+## 🗄️ Database Models
+
+### User Model
+- Personal information (name, email, phone)
+- Role-based access (landlord, client, admin)
+- KYC verification status
+- Profile and preferences
+
+### Property Model
+- Property details (title, description, price)
+- Location information
+- Images and amenities
+- Availability and lease terms
+
+### Application Model
+- Personal and employment information
+- Rental history
+- Financial information
+- Document uploads
+- Application status and decisions
+
+### Payment Model
+- Stripe integration
+- Payment status and history
+- Application fees and rent payments
+
+### Message Model
+- Application-based messaging
+- File attachments
+- Moderation support
+
+## 🔒 Security Features
+
+- **JWT Authentication**: Secure token-based authentication
+- **Role-based Authorization**: Different access levels for users
+- **Rate Limiting**: Prevent abuse and DDoS attacks
+- **CORS Protection**: Configured for frontend domain
+- **Helmet**: Security headers
+- **Input Validation**: Request validation and sanitization
+- **File Upload Security**: File type and size restrictions
+
+## 🚀 Deployment
+
+### Using PM2 (Recommended)
+
+1. **Install PM2**
+   ```bash
+   npm install -g pm2
+   ```
+
+2. **Create ecosystem file**
+   ```bash
+   # ecosystem.config.js
+   module.exports = {
+     apps: [{
+       name: 'landlord-api',
+       script: 'server.js',
+       instances: 'max',
+       exec_mode: 'cluster',
+       env: {
+         NODE_ENV: 'production',
+         PORT: 5001
+       }
+     }]
+   };
+   ```
+
+3. **Start application**
+   ```bash
+   pm2 start ecosystem.config.js
+   pm2 save
+   pm2 startup
+   ```
+
+### Using Docker
+
+1. **Create Dockerfile**
+   ```dockerfile
+   FROM node:18-alpine
+   WORKDIR /app
+   COPY package*.json ./
+   RUN npm ci --only=production
+   COPY . .
+   EXPOSE 5001
+   CMD ["npm", "start"]
+   ```
+
+2. **Build and run**
+   ```bash
+   docker build -t landlord-api .
+   docker run -p 5001:5001 landlord-api
+   ```
+
+## 📊 Health Check
+
+The API provides a health check endpoint:
+
+```
+GET /api/health
+```
+
+Response:
+```json
+{
+  "status": "OK",
+  "timestamp": "2024-01-01T00:00:00.000Z",
+  "uptime": 3600
+}
+```
+
+## 🧪 Testing
+
+```bash
+# Run tests
+npm test
+
+# Run tests with coverage
+npm run test:coverage
+```
+
+## 📝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## 📄 License
+
+This project is licensed under the ISC License.
+
+## 🆘 Support
+
+For support and questions, please contact the development team or create an issue in the repository.
+=======
 2. **Configure environment variables:**
    ```bash
    cp env.example .env
@@ -768,3 +1038,4 @@ CORS_ORIGIN=http://localhost:3000
 10. Set up monitoring and logging
 
 This comprehensive backend will support all the features visible in the frontend application and provide a solid foundation for the rental property management platform.
+>>>>>>> de8eed21a124426eedf0fe71d24c83f38a6359b5
