@@ -1,19 +1,24 @@
 {
-  "watch": ["src"],
-  "ext": "ts,json",
-  "ignore": [
-    "src/**/*.test.ts",
-    "src/**/*.spec.ts",
-    "node_modules",
-    "dist",
-    "logs",
-    "*.log"
+  "watch": [
+    "server.js",
+    "routes",
+    "models",
+    "middleware",
+    "utils",
+    "controllers"
   ],
-  "exec": "ts-node src/server.ts",
+  "ignore": [
+    "node_modules",
+    "uploads",
+    "*.test.js",
+    "*.spec.js"
+  ],
+  "ext": "js,json",
   "env": {
     "NODE_ENV": "development"
   },
-  "delay": 1000,
-  "verbose": true
+  "verbose": false,
+  "restartable": "rs",
+  "delay": "1000"
 }
 

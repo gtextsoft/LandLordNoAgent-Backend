@@ -8,8 +8,16 @@ const createTransporter = () => {
     secure: false, // true for 465, false for other ports
     auth: {
       user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
+      pass: process.env.EMAIL_PASSWORD
+    },
+    connectionTimeout: 60000, // 60 seconds
+    greetingTimeout: 30000,   // 30 seconds
+    socketTimeout: 60000,     // 60 seconds
+    pool: true,
+    maxConnections: 5,
+    maxMessages: 100,
+    rateLimit: 14, // max 14 emails per second
+    debug: process.env.NODE_ENV === 'development'
   });
 };
 
@@ -21,7 +29,16 @@ const generateOTP = () => {
 // Send OTP email
 const sendOTPEmail = async (email, otp, firstName = 'User') => {
   try {
+    // Check if email configuration is available
+    if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      console.warn('Email configuration missing. OTP:', otp);
+      return { success: false, error: 'Email configuration missing' };
+    }
+
     const transporter = createTransporter();
+    
+    // Verify transporter configuration
+    await transporter.verify();
     
     const mailOptions = {
       from: `"Landlord No Agent" <${process.env.EMAIL_USER}>`,
@@ -59,6 +76,8 @@ const sendOTPEmail = async (email, otp, firstName = 'User') => {
     return { success: true, messageId: result.messageId };
   } catch (error) {
     console.error('Error sending OTP email:', error);
+    // Log the OTP for development purposes
+    console.log('OTP for development:', otp);
     throw new Error('Failed to send OTP email');
   }
 };
