@@ -3,8 +3,8 @@ const nodemailer = require('nodemailer');
 // Create email transporter
 const createTransporter = () => {
   return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: process.env.EMAIL_PORT,
+    host: process.env.EMAIL_HOST || 'sandbox.smtp.mailtrap.io',
+    port: process.env.EMAIL_PORT || 2525,
     secure: false, // true for 465, false for other ports
     auth: {
       user: process.env.EMAIL_USER,

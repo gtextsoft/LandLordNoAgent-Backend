@@ -10,8 +10,8 @@ const router = express.Router();
 // Email transporter setup
 const createTransporter = () => {
   return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: process.env.EMAIL_PORT,
+    host: process.env.EMAIL_HOST || 'sandbox.smtp.mailtrap.io',
+    port: process.env.EMAIL_PORT || 2525,
     secure: false,
     auth: {
       user: process.env.EMAIL_USER,

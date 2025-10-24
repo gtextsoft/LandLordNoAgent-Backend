@@ -4,7 +4,22 @@
 
 Your backend is experiencing email connection timeouts. Here's how to fix it:
 
-## Option 1: Gmail Setup (Recommended for Development)
+## Option 1: Mailtrap Setup (Recommended for Development)
+
+1. **Sign up at [mailtrap.io](https://mailtrap.io)**
+2. **Create a new inbox** for your project
+3. **Get your SMTP credentials** from the inbox settings
+4. **Update your `.env` file**:
+
+```env
+EMAIL_HOST=sandbox.smtp.mailtrap.io
+EMAIL_PORT=2525
+EMAIL_USER=your-mailtrap-username
+EMAIL_PASSWORD=your-mailtrap-password
+EMAIL_FROM=noreply@landlordnoagent.com
+```
+
+## Option 2: Gmail Setup (Alternative)
 
 1. **Enable 2-Factor Authentication** on your Gmail account
 2. **Generate an App Password**:
