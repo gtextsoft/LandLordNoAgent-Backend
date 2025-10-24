@@ -121,11 +121,10 @@ router.post("/register", async (req, res) => {
     await user.save();
 
     // Send OTP email
-    const emailSent = await sendOTPEmail(email, otp);
-    if (!emailSent) {
-      return res.status(500).json({
-        message: "Failed to send verification email",
-      });
+    const emailResult = await sendOTPEmail(email, otp);
+    if (!emailResult.success) {
+      console.log('Email failed, but continuing with registration. OTP:', otp);
+      // Don't fail registration if email fails - just log the OTP
     }
 
     res.status(201).json({
@@ -231,11 +230,10 @@ router.post("/resend-otp", async (req, res) => {
     await user.save();
 
     // Send OTP email
-    const emailSent = await sendOTPEmail(email, otp);
-    if (!emailSent) {
-      return res.status(500).json({
-        message: "Failed to send verification email",
-      });
+    const emailResult = await sendOTPEmail(email, otp);
+    if (!emailResult.success) {
+      console.log('Email failed, but continuing with OTP request. OTP:', otp);
+      // Don't fail if email fails - just log the OTP
     }
 
     res.json({
