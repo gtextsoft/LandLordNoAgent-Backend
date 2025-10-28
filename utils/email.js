@@ -31,14 +31,25 @@ const sendOTPEmail = async (email, otp, firstName = 'User') => {
   try {
     // Check if email configuration is available
     if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-      console.warn('Email configuration missing. OTP:', otp);
+      console.warn('⚠️  Email configuration missing in .env file');
+      console.log('🔑 OTP for development:', otp);
       return { success: false, error: 'Email configuration missing' };
     }
 
     const transporter = createTransporter();
     
-    // Verify transporter configuration
-    await transporter.verify();
+    // Verify transporter configuration (skip in development if it fails)
+    try {
+      await transporter.verify();
+    } catch (verifyError) {
+      console.error('❌ Email transporter verification failed:', verifyError.message);
+      console.log('🔑 OTP for development:', otp);
+      // In development, don't throw error - just log OTP
+      if (process.env.NODE_ENV === 'production') {
+        throw verifyError;
+      }
+      return { success: false, error: verifyError.message };
+    }
     
     const mailOptions = {
       from: `"Landlord No Agent" <${process.env.EMAIL_USER}>`,
@@ -72,13 +83,14 @@ const sendOTPEmail = async (email, otp, firstName = 'User') => {
     };
 
     const result = await transporter.sendMail(mailOptions);
-    console.log('OTP email sent successfully:', result.messageId);
+    console.log('✅ OTP email sent successfully:', result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Error sending OTP email:', error);
+    console.error('❌ Error sending OTP email:', error.message);
     // Log the OTP for development purposes
-    console.log('OTP for development:', otp);
-    throw new Error('Failed to send OTP email');
+    console.log('🔑 OTP for development:', otp);
+    // Don't throw error - return failure
+    return { success: false, error: error.message };
   }
 };
 

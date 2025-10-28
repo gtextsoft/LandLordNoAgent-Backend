@@ -39,8 +39,15 @@ const sendOTPEmail = async (email, otp) => {
 
     const transporter = createTransporter();
 
-    // Verify transporter configuration
-    await transporter.verify();
+    // Verify transporter configuration (skip verification errors in development)
+    try {
+      await transporter.verify();
+    } catch (verifyError) {
+      console.error('❌ Email transporter verification failed:', verifyError.message);
+      console.log('🔑 OTP for development:', otp);
+      // In development, don't throw error - just log OTP
+      return { success: false, error: verifyError.message };
+    }
 
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -60,11 +67,12 @@ const sendOTPEmail = async (email, otp) => {
     };
 
     await transporter.sendMail(mailOptions);
+    console.log('✅ OTP email sent successfully');
     return { success: true };
   } catch (error) {
-    console.error("Error sending OTP email:", error);
+    console.error('❌ Error sending OTP email:', error.message);
     // Log the OTP for development purposes
-    console.log('OTP for development:', otp);
+    console.log('🔑 OTP for development:', otp);
     return { success: false, error: error.message };
   }
 };
