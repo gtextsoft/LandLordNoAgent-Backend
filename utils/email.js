@@ -1,10 +1,16 @@
 const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+
+// Initialize Resend if API key is available
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // Create email transporter
 const createTransporter = () => {
   return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || 'sandbox.smtp.mailtrap.io',
-    port: process.env.EMAIL_PORT || 2525,
+    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+    // host: process.env.EMAIL_HOST || 'sandbox.smtp.mailtrap.io',
+    port: process.env.EMAIL_PORT || 587,
+    // port: process.env.EMAIL_PORT || 2525,
     secure: false, // true for 465, false for other ports
     auth: {
       user: process.env.EMAIL_USER,

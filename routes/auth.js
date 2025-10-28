@@ -2,8 +2,12 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const User = require("../models/User");
 const { generateToken, verifyToken } = require("../middleware/auth");
+
+// Initialize Resend
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const router = express.Router();
 
@@ -31,7 +35,40 @@ const createTransporter = () => {
 // Send OTP email
 const sendOTPEmail = async (email, otp) => {
   try {
-    // Check if email configuration is available
+    // Try Resend API first (works on Render without SMTP ports)
+    if (resend) {
+      try {
+        console.log('📧 Attempting to send via Resend API...');
+        const { data, error } = await resend.emails.send({
+          from: process.env.EMAIL_FROM || 'Landlord No Agent <onboarding@resend.dev>',
+          to: email,
+          subject: "Your OTP for Landlord No Agent",
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #333;">Your OTP Code</h2>
+              <p>Your one-time password is:</p>
+              <div style="background-color: #f4f4f4; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin: 20px 0;">
+                ${otp}
+              </div>
+              <p>This code will expire in 10 minutes.</p>
+              <p>If you didn't request this code, please ignore this email.</p>
+            </div>
+          `,
+        });
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        console.log('✅ OTP email sent successfully via Resend:', data?.id);
+        return { success: true, messageId: data?.id };
+      } catch (resendError) {
+        console.error('❌ Resend API failed:', resendError.message);
+        // Fall through to SMTP
+      }
+    }
+
+    // Fallback to SMTP if Resend failed or not configured
     if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
       console.warn('Email configuration missing. OTP:', otp);
       return { success: false, error: 'Email configuration missing' };
@@ -39,14 +76,15 @@ const sendOTPEmail = async (email, otp) => {
 
     const transporter = createTransporter();
 
-    // Verify transporter configuration (skip verification errors in development)
-    try {
-      await transporter.verify();
-    } catch (verifyError) {
-      console.error('❌ Email transporter verification failed:', verifyError.message);
-      console.log('🔑 OTP for development:', otp);
-      // In development, don't throw error - just log OTP
-      return { success: false, error: verifyError.message };
+    // Skip verification in production to avoid timeout issues on Render
+    if (process.env.NODE_ENV !== 'production') {
+      try {
+        await transporter.verify();
+      } catch (verifyError) {
+        console.error('❌ Email transporter verification failed:', verifyError.message);
+        console.log('🔑 OTP for development:', otp);
+        return { success: false, error: verifyError.message };
+      }
     }
 
     const mailOptions = {
