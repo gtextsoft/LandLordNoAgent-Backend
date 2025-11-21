@@ -1,6 +1,7 @@
 const express = require('express');
 const Payment = require('../models/Payment');
 const Application = require('../models/Application');
+const Property = require('../models/Property');
 const { verifyToken, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -87,8 +88,10 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
         },
       ],
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/payment/cancel`,
+      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/cancel`,
+      // Ensure we always get a URL back
+      payment_method_types: ['card'],
       metadata: {
         applicationId: applicationId,
         userId: req.user._id.toString(),
@@ -97,10 +100,18 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
       customer_email: application.client.email,
     });
 
-    // Return session info with publishable key hint for debugging
+    // Return session info - ALWAYS include URL for direct redirect
+    if (!session.url) {
+      console.error('⚠️ Stripe session created but no URL returned!', session);
+      return res.status(500).json({ 
+        message: 'Payment session created but checkout URL is missing. Please try again.',
+        error: 'Missing checkout URL'
+      });
+    }
+
     res.json({
       sessionId: session.id,
-      url: session.url,
+      url: session.url, // This is the most important - use this for direct redirect
       // Include a hint about which publishable key to use (for debugging)
       publishableKeyHint: process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_') 
         ? 'Use pk_test_... key' 
@@ -224,12 +235,20 @@ const handleCheckoutSessionCompleted = async (session) => {
       escrowStatus: isRentPayment ? 'held' : null,
       escrowHeldAt: isRentPayment ? new Date() : null,
       escrowExpiresAt: isRentPayment ? escrowExpiresAt : null,
-      commission_rate: 0, // No commission
-      commission_amount: 0 // No commission
+      commission_rate: 0.05, // 5% commission (calculated when escrow is released)
+      commission_amount: 0 // Commission calculated when escrow is released
     });
 
     await payment.save();
     console.log(`✅ Payment created: ${payment._id}, Escrow: ${isRentPayment ? 'Yes' : 'No'}`);
+
+    // Mark property as unavailable when payment is completed
+    if (isRentPayment && application.property) {
+      await Property.findByIdAndUpdate(application.property._id || application.property, {
+        isAvailable: false
+      });
+      console.log(`✅ Property ${application.property._id || application.property} marked as unavailable after payment`);
+    }
 
   } catch (error) {
     console.error('Handle checkout session completed error:', error);
@@ -262,21 +281,205 @@ const handlePaymentIntentFailed = async (paymentIntent) => {
   }
 };
 
+// @route   GET /api/payments/confirm/:sessionId
+// @desc    Confirm payment session (called after Stripe redirect)
+// @access  Private
+router.get('/confirm/:sessionId', verifyToken, async (req, res) => {
+  try {
+    // Check if Stripe is configured
+    if (!stripe) {
+      return res.status(503).json({ 
+        message: 'Payment processing is currently unavailable. Please contact support.',
+        error: 'Stripe API key not configured'
+      });
+    }
+
+    const { sessionId } = req.params;
+
+    if (!sessionId) {
+      return res.status(400).json({ message: 'Session ID is required' });
+    }
+
+    // Retrieve the Stripe checkout session
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (!session) {
+      return res.status(404).json({ message: 'Payment session not found' });
+    }
+
+    // Check if payment was successful
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ 
+        message: 'Payment not completed',
+        payment_status: session.payment_status
+      });
+    }
+
+    // Check if payment already exists
+    let payment = await Payment.findOne({ stripeSessionId: sessionId });
+
+    if (!payment) {
+      // If payment doesn't exist, trigger the webhook handler logic
+      // This handles cases where webhook hasn't fired yet
+      const { applicationId, userId, type } = session.metadata || {};
+
+      if (applicationId) {
+        // Get application
+        const application = await Application.findById(applicationId)
+          .populate('property', 'rentalType landlord')
+          .populate('client', 'firstName lastName email')
+          .populate('landlord', 'firstName lastName email');
+
+        if (!application) {
+          return res.status(404).json({ message: 'Application not found' });
+        }
+
+        // Determine if this should be escrow
+        const isRentPayment = (type === 'rent' || application.status === 'approved' || application.status === 'accepted');
+        const escrowExpiresAt = new Date();
+        escrowExpiresAt.setDate(escrowExpiresAt.getDate() + 10); // 10 days from now
+
+        // Create payment record with escrow
+        payment = new Payment({
+          application: applicationId,
+          user: userId || application.client._id,
+          amount: session.amount_total / 100, // Convert from cents
+          currency: session.currency,
+          stripePaymentIntentId: session.payment_intent,
+          stripeSessionId: session.id,
+          status: 'completed',
+          type: isRentPayment ? 'rent' : (type || 'application_fee'),
+          isEscrow: isRentPayment,
+          escrowStatus: isRentPayment ? 'held' : null,
+          escrowHeldAt: isRentPayment ? new Date() : null,
+          escrowExpiresAt: isRentPayment ? escrowExpiresAt : null,
+          commission_rate: 0,
+          commission_amount: 0
+        });
+
+        await payment.save();
+
+        // Update application payment status
+        if (type === 'application_fee') {
+          await Application.findByIdAndUpdate(applicationId, {
+            'applicationFee.paid': true,
+            'applicationFee.paymentId': session.payment_intent,
+            'applicationFee.paidAt': new Date()
+          });
+        }
+
+        // Mark property as unavailable when payment is completed
+        if (isRentPayment && application.property) {
+          await Property.findByIdAndUpdate(application.property._id || application.property, {
+            isAvailable: false
+          });
+          console.log(`✅ Property ${application.property._id || application.property} marked as unavailable after payment`);
+        }
+
+        console.log(`✅ Payment confirmed and created: ${payment._id}, Escrow: ${isRentPayment ? 'Yes' : 'No'}`);
+      } else {
+        return res.status(400).json({ message: 'Application ID not found in session metadata' });
+      }
+    }
+
+    // Return payment confirmation
+    res.json({
+      success: true,
+      message: 'Payment confirmed successfully',
+      payment: {
+        id: payment._id,
+        amount: payment.amount,
+        currency: payment.currency,
+        status: payment.status,
+        isEscrow: payment.isEscrow,
+        escrowStatus: payment.escrowStatus,
+        escrowExpiresAt: payment.escrowExpiresAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Confirm payment error:', error);
+    res.status(500).json({ 
+      message: 'Server error while confirming payment',
+      error: error.message 
+    });
+  }
+});
+
 // @route   GET /api/payments/history
 // @desc    Get user payment history
 // @access  Private
 router.get('/history', verifyToken, async (req, res) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 20, applicationId } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const payments = await Payment.find({ user: req.user._id })
-      .populate('application', 'property client')
+    // Build filter based on user role
+    let filters = {};
+    
+    // If applicationId is provided, filter by it directly (and verify user has access)
+    if (applicationId) {
+      // Verify the user has access to this application
+      const application = await Application.findById(applicationId);
+      if (!application) {
+        return res.status(404).json({ message: 'Application not found' });
+      }
+
+      // Check if user has access to this application
+      if (req.user.role === 'client') {
+        // Client can only see payments for their own applications
+        if (application.client.toString() !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'Not authorized to view payments for this application' });
+        }
+      } else if (req.user.role === 'landlord') {
+        // Landlord can only see payments for their own properties
+        if (application.landlord.toString() !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'Not authorized to view payments for this application' });
+        }
+      }
+      // Admin can see all applications
+
+      // Filter by applicationId
+      filters.application = applicationId;
+    } else {
+      // No specific applicationId - use role-based filtering
+      if (req.user.role === 'client') {
+        // Clients see their own payments
+        filters.user = req.user._id;
+      } else if (req.user.role === 'landlord') {
+        // Landlords see payments for their properties
+        // Get all applications for this landlord's properties
+        const landlordApplications = await Application.find({ landlord: req.user._id }).select('_id');
+        const applicationIds = landlordApplications.map(app => app._id);
+        if (applicationIds.length > 0) {
+          filters.application = { $in: applicationIds };
+        } else {
+          // No applications found - return empty result
+          filters.application = { $in: [] };
+        }
+      } else if (req.user.role === 'admin') {
+        // Admin sees all payments
+        // No filter needed
+      } else {
+        filters.user = req.user._id; // Default to own payments
+      }
+    }
+
+    const payments = await Payment.find(filters)
+      .populate({
+        path: 'application',
+        populate: [
+          { path: 'property', select: 'title price address images rentalType' },
+          { path: 'client', select: 'firstName lastName email' },
+          { path: 'landlord', select: 'firstName lastName email' }
+        ]
+      })
+      .populate('user', 'firstName lastName email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
-    const total = await Payment.countDocuments({ user: req.user._id });
+    const total = await Payment.countDocuments(filters);
 
     res.json({
       payments,
@@ -356,7 +559,14 @@ router.get('/receipt', verifyToken, async (req, res) => {
 
     // Fetch actual payment from database
     const payment = await Payment.findById(paymentId)
-      .populate('application', 'property client landlord')
+      .populate({
+        path: 'application',
+        populate: [
+          { path: 'property', select: 'title price address location leaseTerms rentalType' },
+          { path: 'client', select: 'firstName lastName email' },
+          { path: 'landlord', select: 'firstName lastName email' }
+        ]
+      })
       .populate('user', 'firstName lastName email');
 
     if (!payment) {
@@ -397,14 +607,14 @@ router.get('/receipt', verifyToken, async (req, res) => {
           firstName: payment.application.client.firstName,
           lastName: payment.application.client.lastName
         } : null,
-        property: payment.application.property ? {
-          id: payment.application.property._id.toString(),
-          title: payment.application.property.title,
-          location: payment.application.property.address ? 
-            `${payment.application.property.address.street}, ${payment.application.property.address.city}` : 
-            payment.application.property.location,
-          price: payment.application.property.price,
-          duration: payment.application.property.leaseTerms?.minLease
+        property: payment.application?.property ? {
+          id: payment.application.property._id?.toString() || payment.application.property.id,
+          title: payment.application.property.title || 'N/A',
+          location: payment.application.property.address && typeof payment.application.property.address === 'object'
+            ? `${payment.application.property.address.street || ''}, ${payment.application.property.address.city || ''}`.replace(/^,\s*|,\s*$/g, '').trim() || payment.application.property.address.city || payment.application.property.address.street || 'N/A'
+            : payment.application.property.location || 'N/A',
+          price: payment.application.property.price || 0,
+          duration: payment.application.property.leaseTerms?.minLease || payment.application.property.duration || 0
         } : null,
         landlord: payment.application.landlord ? {
           id: payment.application.landlord._id.toString(),
@@ -433,9 +643,11 @@ router.get('/receipt', verifyToken, async (req, res) => {
       client: {
         id: payment.application?.client?.id,
         email: payment.application?.client?.email,
-        name: payment.application?.client?.kyc_data?.firstName || 
-              payment.application?.client?.email?.split('@')[0] || 
-              'Client'
+        name: payment.application?.client?.firstName && payment.application?.client?.lastName
+          ? `${payment.application.client.firstName} ${payment.application.client.lastName}`
+          : payment.application?.client?.kyc_data?.firstName || 
+            payment.application?.client?.email?.split('@')[0] || 
+            'Client'
       },
       landlord: {
         id: payment.landlord?.id,
@@ -444,12 +656,18 @@ router.get('/receipt', verifyToken, async (req, res) => {
               payment.landlord?.email?.split('@')[0] || 
               'Landlord'
       },
-      property: {
-        id: paymentData.application?.property?.id,
-        title: paymentData.application?.property?.title,
-        location: paymentData.application?.property?.location,
-        price: paymentData.application?.property?.price,
-        duration: paymentData.application?.property?.duration
+      property: paymentData.application?.property ? {
+        id: paymentData.application.property.id || null,
+        title: paymentData.application.property.title || 'N/A',
+        location: paymentData.application.property.location || 'N/A',
+        price: paymentData.application.property.price || 0,
+        duration: paymentData.application.property.duration || 0
+      } : {
+        id: null,
+        title: 'N/A',
+        location: 'N/A',
+        price: 0,
+        duration: 0
       },
       application: {
         id: paymentData.application?.id,
@@ -579,11 +797,18 @@ router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, r
     // Calculate interest if property not visited within 10 days
     const daysHeld = Math.floor((new Date() - payment.escrowHeldAt) / (1000 * 60 * 60 * 24));
     const interest = calculateEscrowInterest(payment.amount, daysHeld);
+    payment.escrowInterest = interest;
+    
+    // Calculate 5% commission when escrow is released
+    // Commission is calculated on the original amount (before interest deduction)
+    const COMMISSION_RATE = 0.05; // 5%
+    payment.commission_rate = COMMISSION_RATE;
+    const originalAmount = payment.amount; // Store original amount before interest deduction
+    payment.commission_amount = Math.round(originalAmount * COMMISSION_RATE * 100) / 100; // Round to 2 decimal places
     
     // Update payment
     payment.escrowStatus = 'released';
     payment.escrowReleasedAt = new Date();
-    payment.escrowInterest = interest;
     
     // If interest is charged, reduce the amount to landlord
     if (interest > 0) {
@@ -591,6 +816,8 @@ router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, r
     }
 
     await payment.save();
+    
+    console.log(`✅ Escrow released: Payment ${payment._id}, Commission: ${payment.commission_amount} (5% of ${originalAmount})`);
 
     // TODO: Transfer funds to landlord via Stripe
     // For now, just mark as released

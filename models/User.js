@@ -103,6 +103,37 @@ const userSchema = new mongoose.Schema({
     }
   },
   
+  // Payment Account Details (for landlords)
+  paymentAccount: {
+    accountType: {
+      type: String,
+      enum: ['bank', 'mobile_money', 'other'],
+      default: null
+    },
+    bankName: String,
+    accountName: String,
+    accountNumber: String,
+    routingNumber: String, // For US banks
+    swiftCode: String, // For international transfers
+    iban: String, // For European banks
+    mobileMoneyProvider: String, // e.g., 'MTN', 'Airtel', 'M-Pesa'
+    mobileMoneyNumber: String,
+    country: String,
+    currency: {
+      type: String,
+      default: 'USD'
+    },
+    verified: {
+      type: Boolean,
+      default: false
+    },
+    verifiedAt: Date,
+    verifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }
+  },
+  
   // Account Status
   isActive: {
     type: Boolean,

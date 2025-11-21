@@ -23,7 +23,7 @@ router.get('/profile', verifyToken, async (req, res) => {
 router.put('/profile', verifyToken, async (req, res) => {
   try {
     const allowedUpdates = [
-      'firstName', 'lastName', 'phone', 'profile', 'preferences'
+      'firstName', 'lastName', 'phone', 'profile', 'preferences', 'paymentAccount'
     ];
     
     const updates = {};

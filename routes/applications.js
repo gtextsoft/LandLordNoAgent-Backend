@@ -135,6 +135,26 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
       return res.status(404).json({ message: 'Property not found' });
     }
 
+    // Check if property has been paid for (has a completed payment)
+    // First, find all applications for this property
+    const propertyApplications = await Application.find({ property: propertyIdValue }).select('_id');
+    const applicationIds = propertyApplications.map(app => app._id);
+    
+    // Check if any of these applications have a completed rent payment
+    if (applicationIds.length > 0) {
+      const hasCompletedPayment = await Payment.findOne({
+        application: { $in: applicationIds },
+        status: 'completed',
+        type: 'rent'
+      });
+
+      if (hasCompletedPayment) {
+        return res.status(400).json({ 
+          message: 'This property has already been rented. Payment has been completed for this property.' 
+        });
+      }
+    }
+
     // For verified properties, allow applications even if status is 'draft'
     const isVerified = property.isVerified;
     const isAvailable = property.isAvailable;

@@ -17,8 +17,75 @@ console.log('🔐 MONGODB_URI from env:', process.env.MONGODB_URI);
 // const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/landlord-no-agent';
 const MONGO_URI = process.env.MONGODB_URI 
 
+// ===== 🌐 CORS Configuration (MUST BE BEFORE OTHER MIDDLEWARE) =====
+// Get allowed origins from environment or use defaults
+const getAllowedOrigins = () => {
+  const origins = [
+    'http://localhost:3000',
+    'https://landlordnoagent.vercel.app',
+    'https://landlord-no-agent-frontend.vercel.app' // Actual Vercel frontend URL
+  ];
+  
+  // Add any additional origins from environment variable
+  if (process.env.FRONTEND_URL) {
+    const envOrigins = process.env.FRONTEND_URL.split(',').map(url => url.trim());
+    origins.push(...envOrigins);
+  }
+  
+  return [...new Set(origins)]; // Remove duplicates
+};
+
+const allowedOrigins = getAllowedOrigins();
+console.log('🌐 Allowed CORS origins:', allowedOrigins);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (e.g. mobile apps / Postman / server-to-server)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`⚠️  CORS blocked origin: ${origin}`);
+      callback(new Error(`Not allowed by CORS. Origin: ${origin}`));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 86400, // 24 hours - cache preflight requests
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+};
+
+// Apply CORS middleware FIRST, before other middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly for all routes
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  
+  if (!origin || allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.status(204).send();
+  } else {
+    return res.status(403).json({ message: 'Not allowed by CORS' });
+  }
+});
+
 // ===== 🧰 Security middleware =====
-app.use(helmet());
+// Configure helmet to work with CORS
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false
+}));
 app.use(morgan('combined'));
 
 // ===== 🧱 Rate Limiting =====
@@ -28,43 +95,7 @@ const limiter = rateLimit({
 });
 // app.use(limiter);
 
-// // ===== 🌐 CORS Configuration =====
-// app.use(cors({
-//   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-//   credentials: true
-// }));
-
-// ===== 🌐 CORS Configuration =====
-// app.use(cors({
-//   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-//   credentials: true,
-//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-//   allowedHeaders: ['Content-Type', 'Authorization']
-// }));
-
-const allowedOrigins = [
-  'http://localhost:3000',
-  'https://landlordnoagent.vercel.app'
-];
-
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. mobile apps / Postman)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.options('*', cors());
-
+// 
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     return next(); // skip rate limiting
@@ -139,13 +170,36 @@ app.get('/api/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    mongoURI: MONGO_URI.includes('mongodb+srv') ? 'Atlas (Cloud)' : 'Local'
+    mongoURI: MONGO_URI.includes('mongodb+srv') ? 'Atlas (Cloud)' : 'Local',
+    allowedOrigins: allowedOrigins
+  });
+});
+
+// ===== 🧪 CORS Test Endpoint =====
+app.get('/api/cors-test', (req, res) => {
+  const origin = req.headers.origin;
+  res.json({
+    message: 'CORS test successful',
+    origin: origin,
+    allowed: origin ? allowedOrigins.includes(origin) : 'No origin header',
+    allowedOrigins: allowedOrigins
   });
 });
 
 // ===== 🧯 Error Handling =====
 app.use((err, req, res, next) => {
   console.error('🔥 Error:', err.stack);
+  
+  // Handle CORS errors specifically
+  if (err.message && err.message.includes('CORS')) {
+    const origin = req.headers.origin;
+    console.error(`🚫 CORS Error for origin: ${origin}`);
+    return res.status(403).json({
+      message: 'CORS policy violation',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Origin not allowed'
+    });
+  }
+  
   res.status(500).json({
     message: 'Something went wrong!',
     error: process.env.NODE_ENV === 'development' ? err.message : {}
