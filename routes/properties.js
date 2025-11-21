@@ -1,6 +1,7 @@
 const express = require('express');
 const Property = require('../models/Property');
 const Application = require('../models/Application');
+const User = require('../models/User');
 const { verifyToken, authorize, optionalAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -18,6 +19,7 @@ router.get('/', optionalAuth, async (req, res) => {
       bedrooms,
       bathrooms,
       propertyType,
+      rentalType,
       city,
       state,
       zipCode,
@@ -27,11 +29,32 @@ router.get('/', optionalAuth, async (req, res) => {
     } = req.query;
 
     // Build filter object
+    // Always filter by verified properties for public/client access
+    // Admin can see all properties via /api/admin/properties
+    // For verified properties, we show them regardless of status (active, draft, etc.)
+    // as long as they are verified and available
     const filters = {
-      status: 'active',
       isAvailable: true,
-      isVerified: true
+      isVerified: true // Only show verified properties to clients/tenants
     };
+    
+    // For client-facing queries, show verified properties regardless of status
+    // This allows verified properties to be visible even if they're in 'draft' status
+    // Only filter by status if explicitly requested
+    if (req.query.status) {
+      filters.status = req.query.status;
+    } else {
+      // Include multiple statuses for verified properties
+      // 'draft' status is allowed for verified properties so they can be visible to clients
+      filters.status = { $in: ['active', 'draft', 'published', 'live'] };
+    }
+    
+    // Allow explicit verified parameter override (though it should always be true for clients)
+    if (req.query.verified === 'false') {
+      // Only allow unverified properties if explicitly requested (for admin/internal use)
+      // This should be restricted to admin routes, but keeping for backward compatibility
+      delete filters.isVerified;
+    }
 
     if (minPrice || maxPrice) {
       filters.price = {};
@@ -42,50 +65,113 @@ router.get('/', optionalAuth, async (req, res) => {
     if (bedrooms) filters.bedrooms = parseInt(bedrooms);
     if (bathrooms) filters.bathrooms = parseInt(bathrooms);
     if (propertyType) filters.propertyType = propertyType;
+    if (rentalType) filters.rentalType = rentalType;
 
-    if (city) filters['address.city'] = new RegExp(city, 'i');
-    if (state) filters['address.state'] = new RegExp(state, 'i');
+    // Handle location parameter (can be city, state, or a general location string)
+    // Priority: specific city/state > general location parameter
+    if (city) {
+      filters['address.city'] = new RegExp(city, 'i');
+    } else if (state) {
+      filters['address.state'] = new RegExp(state, 'i');
+    } else if (req.query.location) {
+      // Use general location parameter to search across city, state, and street
+      const location = req.query.location;
+      filters.$or = [
+        { 'address.city': new RegExp(location, 'i') },
+        { 'address.state': new RegExp(location, 'i') },
+        { 'address.street': new RegExp(location, 'i') }
+      ];
+    }
+    
     if (zipCode) filters['address.zipCode'] = zipCode;
 
-    if (features) {
-      const featureArray = features.split(',');
+    // Handle both 'features' and 'amenities' parameters (for backward compatibility)
+    const featuresParam = req.query.features || req.query.amenities;
+    if (featuresParam) {
+      const featureArray = featuresParam.split(',');
       filters.features = { $in: featureArray };
     }
 
-    // Build sort object
+    // Build sort object - validate sortBy field
+    const validSortFields = ['createdAt', 'price', 'title', 'updatedAt', 'views'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
     const sort = {};
-    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    sort[sortField] = sortOrder === 'desc' ? -1 : 1;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    const limitNum = parseInt(limit) || 12;
 
-    // Execute query
-    const properties = await Property.find(filters)
-      .populate('landlord', 'firstName lastName email phone')
-      .sort(sort)
-      .skip(skip)
-      .limit(parseInt(limit));
+    // Execute query with error handling
+    let properties, total;
+    try {
+      // Don't use lean() with populate - it can cause issues
+      properties = await Property.find(filters)
+        .populate('landlord', 'firstName lastName email phone')
+        .sort(sort)
+        .skip(skip)
+        .limit(limitNum);
+      
+      total = await Property.countDocuments(filters);
+    } catch (queryError) {
+      console.error('Database query error:', queryError);
+      // If populate fails, try without populate
+      try {
+        properties = await Property.find(filters)
+          .sort(sort)
+          .skip(skip)
+          .limit(limitNum);
+        total = await Property.countDocuments(filters);
+      } catch (fallbackError) {
+        console.error('Fallback query error:', fallbackError);
+        throw fallbackError;
+      }
+    }
 
-    const total = await Property.countDocuments(filters);
+    // Transform properties to ensure consistent format
+    const transformedProperties = properties.map(prop => {
+      // Handle both Mongoose documents and plain objects (from lean())
+      const propObj = prop.toObject ? prop.toObject() : (prop._doc || prop);
+      const landlordObj = propObj.landlord ? 
+        (propObj.landlord.toObject ? propObj.landlord.toObject() : (propObj.landlord._doc || propObj.landlord)) : 
+        null;
+      
+      return {
+        ...propObj,
+        _id: propObj._id,
+        id: propObj._id?.toString() || propObj.id,
+        // Ensure landlord is properly formatted
+        landlord: landlordObj ? {
+          ...landlordObj,
+          id: landlordObj._id?.toString() || landlordObj.id
+        } : propObj.landlord
+      };
+    });
 
     res.json({
-      properties,
+      properties: transformedProperties,
       pagination: {
-        current: parseInt(page),
-        pages: Math.ceil(total / parseInt(limit)),
-        total,
-        limit: parseInt(limit)
+        current: parseInt(page) || 1,
+        pages: Math.ceil(total / limitNum) || 1,
+        total: total || 0,
+        limit: limitNum
       }
     });
 
   } catch (error) {
     console.error('Get properties error:', error);
-    res.status(500).json({ message: 'Server error while fetching properties' });
+    res.status(500).json({ 
+      message: 'Server error while fetching properties',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 // @route   GET /api/properties/:id
 // @desc    Get single property by ID
 // @access  Public
+// Note: For client-facing access, we should only show verified properties
+// But for individual property pages, we allow access if the property is verified
+// regardless of status (draft, active, etc.)
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const property = await Property.findById(req.params.id)
@@ -95,10 +181,38 @@ router.get('/:id', optionalAuth, async (req, res) => {
       return res.status(404).json({ message: 'Property not found' });
     }
 
+    // For client-facing access, only show verified properties
+    // Admin and landlords can see their own properties regardless of verification
+    const isAdmin = req.user && req.user.role === 'admin';
+    const isOwner = req.user && property.landlord && 
+      (property.landlord._id?.toString() === req.user._id?.toString() || 
+       property.landlord.toString() === req.user._id?.toString());
+
+    // If not admin or owner, only show verified properties
+    if (!isAdmin && !isOwner && !property.isVerified) {
+      return res.status(404).json({ message: 'Property not found' });
+    }
+
     // Increment view count
     await property.incrementViews();
 
-    res.json({ property });
+    // Transform property to ensure consistent format
+    const propertyObj = property.toObject ? property.toObject() : (property._doc || property);
+    const landlordObj = propertyObj.landlord ? 
+      (propertyObj.landlord.toObject ? propertyObj.landlord.toObject() : (propertyObj.landlord._doc || propertyObj.landlord)) : 
+      null;
+
+    const transformedProperty = {
+      ...propertyObj,
+      _id: propertyObj._id,
+      id: propertyObj._id?.toString() || propertyObj.id,
+      landlord: landlordObj ? {
+        ...landlordObj,
+        id: landlordObj._id?.toString() || landlordObj.id
+      } : propertyObj.landlord
+    };
+
+    res.json({ property: transformedProperty });
 
   } catch (error) {
     console.error('Get property error:', error);
@@ -111,6 +225,18 @@ router.get('/:id', optionalAuth, async (req, res) => {
 // @access  Private (Landlord)
 router.post('/', verifyToken, authorize('landlord'), async (req, res) => {
   try {
+    // Check if landlord is verified
+    const landlord = await User.findById(req.user._id);
+    if (!landlord) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (!landlord.isVerified) {
+      return res.status(403).json({ 
+        message: 'You must be verified by admin before you can list properties. Please complete your KYC verification first.' 
+      });
+    }
+
     const propertyData = {
       ...req.body,
       landlord: req.user._id

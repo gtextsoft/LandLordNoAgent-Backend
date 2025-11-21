@@ -29,6 +29,13 @@ const propertySchema = new mongoose.Schema({
     enum: ['apartment', 'house', 'condo', 'studio', 'townhouse', 'other'],
     required: true
   },
+  // Rental Type: short-term (shortlet) or long-term
+  rentalType: {
+    type: String,
+    enum: ['short-term', 'long-term'],
+    default: 'long-term',
+    required: true
+  },
   bedrooms: {
     type: Number,
     required: true,
@@ -86,6 +93,36 @@ const propertySchema = new mongoose.Schema({
     }
   }],
   
+  // House Documents (property ownership documents, permits, etc.)
+  houseDocuments: [{
+    url: {
+      type: String,
+      required: true
+    },
+    name: String,
+    type: {
+      type: String,
+      default: 'other'
+    },
+    uploadedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  
+  // Videos
+  videos: [{
+    url: {
+      type: String,
+      required: true
+    },
+    caption: String,
+    uploadedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  
   // Features and Amenities
   features: [String],
   amenities: [String],
@@ -96,6 +133,17 @@ const propertySchema = new mongoose.Schema({
     default: true
   },
   availableFrom: Date,
+  // Available dates for shortlets (array of date ranges)
+  availableDates: [{
+    start: {
+      type: Date,
+      required: true
+    },
+    end: {
+      type: Date,
+      required: true
+    }
+  }],
   leaseTerms: {
     minLease: {
       type: Number,

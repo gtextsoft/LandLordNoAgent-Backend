@@ -1,6 +1,8 @@
 const express = require('express');
 const Application = require('../models/Application');
 const Property = require('../models/Property');
+const User = require('../models/User');
+const Payment = require('../models/Payment');
 const { verifyToken, authorize } = require('../middleware/auth');
 
 const router = express.Router();
@@ -32,7 +34,7 @@ router.get('/', verifyToken, async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const applications = await Application.find(filters)
-      .populate('property', 'title price address images')
+      .populate('property', 'title price address images rentalType propertyType')
       .populate('client', 'firstName lastName email phone')
       .populate('landlord', 'firstName lastName email phone')
       .sort({ applicationDate: -1 })
@@ -95,29 +97,57 @@ router.get('/:id', verifyToken, async (req, res) => {
 // @access  Private (Client)
 router.post('/', verifyToken, authorize('client'), async (req, res) => {
   try {
-    const { propertyId, personalInfo, employment, rentalHistory, financialInfo, preferences } = req.body;
+    // Support both new simple format and legacy complex format
+    const { 
+      propertyId, 
+      property_id, 
+      personalInfo, 
+      employment, 
+      rentalHistory, 
+      financialInfo, 
+      preferences,
+      // New simple format fields
+      message,
+      monthly_income,
+      employment_status,
+      custom_employment_status,
+      move_in_date,
+      booking_start_date,
+      booking_end_date,
+      lease_duration,
+      total_amount,
+      kyc_docs,
+      status
+    } = req.body;
 
-    // Validate required fields
-    if (!propertyId || !personalInfo || !employment) {
+    // Use propertyId or property_id
+    const propertyIdValue = propertyId || property_id;
+    
+    if (!propertyIdValue) {
       return res.status(400).json({ 
-        message: 'Property ID, personal info, and employment info are required' 
+        message: 'Property ID is required' 
       });
     }
 
     // Check if property exists and is available
-    const property = await Property.findById(propertyId);
+    const property = await Property.findById(propertyIdValue);
     if (!property) {
       return res.status(404).json({ message: 'Property not found' });
     }
 
-    if (!property.isAvailable || property.status !== 'active') {
+    // For verified properties, allow applications even if status is 'draft'
+    const isVerified = property.isVerified;
+    const isAvailable = property.isAvailable;
+    const propertyStatus = property.status;
+    
+    if (!isAvailable || (!isVerified && propertyStatus !== 'active')) {
       return res.status(400).json({ message: 'Property is not available for applications' });
     }
 
     // Check if user already has an application for this property
     const existingApplication = await Application.findOne({
       client: req.user._id,
-      property: propertyId
+      property: propertyIdValue
     });
 
     if (existingApplication) {
@@ -126,21 +156,104 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
       });
     }
 
-    // Create application
-    const application = new Application({
-      property: propertyId,
+    // Build application data - support both formats
+    let applicationData = {
+      property: propertyIdValue,
       client: req.user._id,
       landlord: property.landlord,
-      personalInfo,
-      employment,
-      rentalHistory: rentalHistory || [],
-      financialInfo,
-      preferences,
+      status: status || 'pending',
       applicationFee: {
         amount: property.applicationFee || 0
       }
-    });
+    };
 
+    // If using new simple format, map to backend structure
+    if (message !== undefined || monthly_income !== undefined || employment_status !== undefined) {
+      // Get user info for personalInfo
+      const user = await User.findById(req.user._id);
+      
+      applicationData.personalInfo = {
+        firstName: user?.firstName || req.user.firstName || '',
+        lastName: user?.lastName || req.user.lastName || '',
+        email: user?.email || req.user.email || '',
+        phone: user?.phone || req.user.phone || ''
+      };
+
+      // Map frontend employment_status to backend enum values
+      // Frontend sends: 'employed', 'part_time', 'self_employed', 'student', 'retired', 'unemployed', 'other'
+      // Backend expects: 'full-time', 'part-time', 'contract', 'self-employed', 'unemployed', 'student', 'retired'
+      const employmentTypeMap = {
+        'employed': 'full-time',
+        'part_time': 'part-time',
+        'part-time': 'part-time',
+        'self_employed': 'self-employed',
+        'self-employed': 'self-employed',
+        'contract': 'contract',
+        'unemployed': 'unemployed',
+        'student': 'student',
+        'retired': 'retired',
+        'other': 'self-employed' // Default 'other' to 'self-employed'
+      };
+      
+      // Get mapped value or use the original if it's already a valid enum value
+      const validEnumValues = ['full-time', 'part-time', 'contract', 'self-employed', 'unemployed', 'student', 'retired'];
+      const mappedEmploymentType = employmentTypeMap[employment_status] || 
+                                   (validEnumValues.includes(employment_status) 
+                                     ? employment_status 
+                                     : 'self-employed'); // Default to 'self-employed' if unknown
+
+      applicationData.employment = {
+        monthlyIncome: parseFloat(monthly_income) || 0,
+        employmentType: mappedEmploymentType
+      };
+
+      applicationData.financialInfo = {
+        monthlyIncome: parseFloat(monthly_income) || 0
+      };
+
+      // Add message as preferences or notes
+      if (message) {
+        applicationData.preferences = { message };
+        applicationData.reviewNotes = message;
+      }
+
+      // Add dates
+      if (move_in_date) {
+        applicationData.preferences = {
+          ...applicationData.preferences,
+          moveInDate: move_in_date,
+          leaseDuration: parseInt(lease_duration) || 12
+        };
+      }
+
+      if (booking_start_date && booking_end_date) {
+        applicationData.preferences = {
+          ...applicationData.preferences,
+          bookingStartDate: booking_start_date,
+          bookingEndDate: booking_end_date,
+          totalAmount: parseFloat(total_amount) || 0
+        };
+      }
+
+      // Add KYC docs if provided
+      if (kyc_docs && Object.keys(kyc_docs).length > 0) {
+        applicationData.documents = Object.entries(kyc_docs).map(([type, url]) => ({
+          type,
+          url: String(url), // Convert to string (JavaScript, not TypeScript)
+          uploadedAt: new Date()
+        }));
+      }
+    } else {
+      // Legacy format
+      applicationData.personalInfo = personalInfo;
+      applicationData.employment = employment;
+      applicationData.rentalHistory = rentalHistory || [];
+      applicationData.financialInfo = financialInfo;
+      applicationData.preferences = preferences;
+    }
+
+    // Create application
+    const application = new Application(applicationData);
     await application.save();
 
     // Update property applications count
@@ -148,7 +261,7 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
 
     // Populate the response
     await application.populate([
-      { path: 'property', select: 'title price address images' },
+      { path: 'property', select: 'title price address images rentalType' },
       { path: 'client', select: 'firstName lastName email phone' },
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);
@@ -160,7 +273,7 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
 
   } catch (error) {
     console.error('Create application error:', error);
-    res.status(500).json({ message: 'Server error while creating application' });
+    res.status(500).json({ message: 'Server error while creating application', error: error.message });
   }
 });
 
@@ -185,6 +298,12 @@ router.put('/:id', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to update this application' });
     }
 
+    // Check if payment has been made for this application
+    const hasPayment = await Payment.findOne({ 
+      application: application._id, 
+      status: 'completed' 
+    });
+
     // Restrict what fields can be updated based on role and status
     const allowedUpdates = {};
     
@@ -194,10 +313,28 @@ router.put('/:id', verifyToken, async (req, res) => {
       allowedClientFields.forEach(field => {
         if (req.body[field]) allowedUpdates[field] = req.body[field];
       });
-    } else if (req.user.role === 'landlord' || req.user.role === 'admin') {
-      // Landlords and admins can update status and review information
+    } else if (req.user.role === 'landlord') {
+      // Landlords can update status and review information
+      // BUT: Cannot reject after payment has been made
+      if (req.body.status === 'rejected' && hasPayment) {
+        return res.status(403).json({ 
+          message: 'Cannot reject application after payment has been made. Please contact admin.' 
+        });
+      }
+      
       const allowedLandlordFields = ['status', 'reviewNotes', 'decision'];
       allowedLandlordFields.forEach(field => {
+        if (req.body[field]) allowedUpdates[field] = req.body[field];
+      });
+      
+      if (req.body.status && req.body.status !== application.status) {
+        allowedUpdates.reviewedAt = new Date();
+        allowedUpdates.reviewedBy = req.user._id;
+      }
+    } else if (req.user.role === 'admin') {
+      // Admin can update status at any time (even after payment)
+      const allowedAdminFields = ['status', 'reviewNotes', 'decision'];
+      allowedAdminFields.forEach(field => {
         if (req.body[field]) allowedUpdates[field] = req.body[field];
       });
       
@@ -212,7 +349,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       allowedUpdates,
       { new: true, runValidators: true }
     ).populate([
-      { path: 'property', select: 'title price address images' },
+      { path: 'property', select: 'title price address images rentalType propertyType' },
       { path: 'client', select: 'firstName lastName email phone' },
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);

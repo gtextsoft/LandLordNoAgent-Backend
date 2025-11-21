@@ -54,6 +54,42 @@ const paymentSchema = new mongoose.Schema({
   refundReason: String,
   refundedAt: Date,
   
+  // Escrow Information
+  isEscrow: {
+    type: Boolean,
+    default: false
+  },
+  escrowStatus: {
+    type: String,
+    enum: ['held', 'released', 'refunded'],
+    default: null
+  },
+  escrowHeldAt: Date,
+  escrowReleasedAt: Date,
+  escrowExpiresAt: Date, // 10 days from payment
+  escrowInterest: {
+    type: Number,
+    default: 0
+  },
+  propertyVisited: {
+    type: Boolean,
+    default: false
+  },
+  documentsReceived: {
+    type: Boolean,
+    default: false
+  },
+  
+  // Commission (removed - set to 0)
+  commission_rate: {
+    type: Number,
+    default: 0
+  },
+  commission_amount: {
+    type: Number,
+    default: 0
+  },
+  
   // Metadata
   description: String,
   metadata: mongoose.Schema.Types.Mixed,

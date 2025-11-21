@@ -497,7 +497,17 @@ router.post("/reset-password", async (req, res) => {
 router.get("/me", verifyToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select("-password");
-    res.json({ user });
+    // Transform user data to match frontend expectations
+    const userData = user.toObject();
+    // Map _id to id for frontend compatibility
+    userData.id = userData._id;
+    // Map isVerified from kyc.status for backward compatibility
+    if (!userData.isVerified && user.kyc?.status === 'verified') {
+      userData.isVerified = true;
+    }
+    // Map kyc.status to is_verified for frontend
+    userData.is_verified = userData.isVerified || user.kyc?.status === 'verified';
+    res.json({ user: userData });
   } catch (error) {
     console.error("Get user error:", error);
     res.status(500).json({

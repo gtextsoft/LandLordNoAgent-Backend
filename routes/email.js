@@ -125,6 +125,53 @@ function getServerTemplates() {
       html: '<p>Hi {{landlord_name}}, you received a payment of {{currency}} {{amount}} from {{client_name}} for {{property_title}}.</p>',
       text: 'Hi {{landlord_name}}, you received a payment of {{currency}} {{amount}} from {{client_name}} for {{property_title}}.',
     },
+    kyc_rejected: {
+      subject: 'KYC Verification Rejected - Action Required',
+      html: `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KYC Verification Rejected</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f8fafc;">
+  <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+    <div style="background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); padding: 40px 20px; text-align: center;">
+      <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: bold;">LandLordNoAgent</h1>
+      <p style="color: #e0e7ff; margin: 8px 0 0 0; font-size: 16px;">KYC Verification Update</p>
+    </div>
+    <div style="padding: 40px 30px;">
+      <h2 style="color: #dc2626; margin: 0 0 20px 0;">KYC Verification Rejected</h2>
+      <p style="color: #6b7280; line-height: 1.6;">Dear {{name}},</p>
+      <p style="color: #6b7280; line-height: 1.6;">Your KYC verification has been reviewed and unfortunately, it has been rejected.</p>
+      <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 20px; margin: 20px 0;">
+        <h3 style="color: #991b1b; margin: 0 0 10px 0; font-size: 16px;">Reason for Rejection:</h3>
+        <p style="color: #7f1d1d; margin: 0; line-height: 1.6;">{{rejectionReason}}</p>
+      </div>
+      <p style="color: #6b7280; line-height: 1.6;">Please review the reason above and resubmit your KYC documents with the necessary corrections.</p>
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="{{profileUrl}}" style="display: inline-block; background-color: #3b82f6; color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: bold;">Resubmit KYC Documents</a>
+      </div>
+      <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">If you have any questions, please contact our support team.</p>
+    </div>
+  </div>
+</body>
+</html>`,
+      text: `KYC Verification Rejected
+
+Dear {{name}},
+
+Your KYC verification has been reviewed and unfortunately, it has been rejected.
+
+Reason for Rejection:
+{{rejectionReason}}
+
+Please review the reason above and resubmit your KYC documents with the necessary corrections.
+
+Resubmit your documents here: {{profileUrl}}
+
+If you have any questions, please contact our support team.`,
+    },
   };
 }
 

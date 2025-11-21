@@ -73,6 +73,11 @@ router.post('/upload-kyc', verifyToken, async (req, res) => {
       status: 'pending'
     })));
 
+    // Set KYC status to pending when documents are uploaded
+    if (user.kyc.status === 'pending' || user.kyc.documents.length > 0) {
+      user.kyc.status = 'pending';
+    }
+
     await user.save();
 
     res.json({
@@ -265,9 +270,93 @@ router.put('/admin/:id/kyc', verifyToken, authorize('admin'), async (req, res) =
     if (status === 'verified') {
       user.kyc.verifiedAt = new Date();
       user.kyc.rejectedReason = undefined;
+      // Set user as verified when KYC is approved
+      user.isVerified = true;
     } else if (status === 'rejected') {
       user.kyc.rejectedReason = rejectedReason;
       user.kyc.verifiedAt = undefined;
+      // Set isVerified to false when rejected
+      user.isVerified = false;
+      
+      // Send rejection email to user
+      try {
+        const { Resend } = require('resend');
+        const resendApiKey = process.env.RESEND_API_KEY;
+        const fromAddress = process.env.EMAIL_FROM || 'no-reply@landlordnoagent.app';
+        
+        if (resendApiKey) {
+          const resend = new Resend(resendApiKey);
+          const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+          const profileUrl = `${frontendUrl}/dashboard/${user.role}/profile`;
+          
+          const emailHtml = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            </head>
+            <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f8fafc;">
+              <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+                <div style="background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); padding: 40px 20px; text-align: center;">
+                  <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: bold;">LandLordNoAgent</h1>
+                  <p style="color: #e0e7ff; margin: 8px 0 0 0; font-size: 16px;">KYC Verification Update</p>
+                </div>
+                <div style="padding: 40px 30px;">
+                  <h2 style="color: #dc2626; margin: 0 0 20px 0;">KYC Verification Rejected</h2>
+                  <p style="color: #6b7280; line-height: 1.6;">Dear ${user.firstName || 'User'},</p>
+                  <p style="color: #6b7280; line-height: 1.6;">Your KYC verification has been reviewed and unfortunately, it has been rejected.</p>
+                  <div style="background-color: #fef2f2; border-left: 4px solid #dc2626; padding: 20px; margin: 20px 0;">
+                    <h3 style="color: #991b1b; margin: 0 0 10px 0; font-size: 16px;">Reason for Rejection:</h3>
+                    <p style="color: #7f1d1d; margin: 0; line-height: 1.6;">${rejectedReason || 'Please review your documents and resubmit.'}</p>
+                  </div>
+                  <p style="color: #6b7280; line-height: 1.6;">Please review the reason above and resubmit your KYC documents with the necessary corrections.</p>
+                  <div style="text-align: center; margin: 30px 0;">
+                    <a href="${profileUrl}" style="display: inline-block; background-color: #3b82f6; color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: bold;">Resubmit KYC Documents</a>
+                  </div>
+                  <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">If you have any questions, please contact our support team.</p>
+                </div>
+              </div>
+            </body>
+            </html>
+          `;
+          
+          const emailText = `KYC Verification Rejected
+
+Dear ${user.firstName || 'User'},
+
+Your KYC verification has been reviewed and unfortunately, it has been rejected.
+
+Reason for Rejection:
+${rejectedReason || 'Please review your documents and resubmit.'}
+
+Please review the reason above and resubmit your KYC documents with the necessary corrections.
+
+Resubmit your documents here: ${profileUrl}
+
+If you have any questions, please contact our support team.`;
+          
+          await resend.emails.send({
+            from: fromAddress,
+            to: user.email,
+            subject: 'KYC Verification Rejected - Action Required',
+            html: emailHtml,
+            text: emailText,
+          });
+          
+          console.log(`✅ KYC rejection email sent to ${user.email}`);
+        } else {
+          console.warn('RESEND_API_KEY not set. KYC rejection email not sent.');
+        }
+      } catch (emailError) {
+        console.error('Error sending KYC rejection email:', emailError);
+        // Don't fail the request if email fails
+      }
+    } else if (status === 'pending') {
+      // When revoking, set back to pending and remove verification
+      user.kyc.verifiedAt = undefined;
+      user.kyc.rejectedReason = undefined;
+      user.isVerified = false;
     }
 
     await user.save();

@@ -231,7 +231,7 @@ router.get('/properties', async (req, res) => {
 // @route   PUT /api/admin/properties/:id/verify
 // @desc    Verify/unverify property
 // @access  Private (Admin)
-router.put('/properties/:id/verify', async (req, res) => {
+router.put('/properties/:id/verify', verifyToken, authorize('admin'), async (req, res) => {
   try {
     const { isVerified } = req.body;
 
@@ -257,6 +257,34 @@ router.put('/properties/:id/verify', async (req, res) => {
   } catch (error) {
     console.error('Update property verification error:', error);
     res.status(500).json({ message: 'Server error while updating property verification' });
+  }
+});
+
+// @route   PUT /api/admin/properties/:id/availability
+// @desc    Update property availability
+// @access  Private (Admin)
+router.put('/properties/:id/availability', async (req, res) => {
+  try {
+    const { isAvailable } = req.body;
+
+    const property = await Property.findByIdAndUpdate(
+      req.params.id,
+      { isAvailable },
+      { new: true }
+    ).populate('landlord', 'firstName lastName email');
+
+    if (!property) {
+      return res.status(404).json({ message: 'Property not found' });
+    }
+
+    res.json({
+      message: `Property marked as ${isAvailable ? 'available' : 'unavailable'} successfully`,
+      property
+    });
+
+  } catch (error) {
+    console.error('Update property availability error:', error);
+    res.status(500).json({ message: 'Server error while updating property availability' });
   }
 });
 
@@ -498,6 +526,70 @@ router.get('/reports/platform', async (req, res) => {
   } catch (error) {
     console.error('Generate platform report error:', error);
     res.status(500).json({ message: 'Server error while generating platform report' });
+  }
+});
+
+// @route   DELETE /api/admin/users/:id
+// @desc    Delete a user and all related data
+// @access  Private (Admin)
+router.delete('/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    // Find the user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Prevent deleting admin users (optional safety check)
+    if (user.role === 'admin') {
+      return res.status(403).json({ message: 'Cannot delete admin users' });
+    }
+
+    // Delete all related data
+    await Property.deleteMany({ landlord_id: userId });
+    await Application.deleteMany({ 
+      $or: [
+        { client_id: userId },
+        { landlord_id: userId }
+      ]
+    });
+    await Payment.deleteMany({ 
+      $or: [
+        { client_id: userId },
+        { landlord_id: userId }
+      ]
+    });
+    await MaintenanceRequest.deleteMany({ 
+      $or: [
+        { client_id: userId },
+        { landlord_id: userId }
+      ]
+    });
+    await ViewingAppointment.deleteMany({ 
+      $or: [
+        { client_id: userId },
+        { landlord_id: userId }
+      ]
+    });
+    await Message.deleteMany({ 
+      $or: [
+        { sender_id: userId },
+        { receiver_id: userId }
+      ]
+    });
+
+    // Delete the user
+    await User.findByIdAndDelete(userId);
+
+    res.json({
+      message: 'User and all related data deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ message: 'Server error while deleting user' });
   }
 });
 
