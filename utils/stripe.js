@@ -1,7 +1,7 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Create payment intent
-const createPaymentIntent = async (amount, currency = 'usd', metadata = {}) => {
+const createPaymentIntent = async (amount, currency = 'ngn', metadata = {}) => {
   try {
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100), // Convert to cents

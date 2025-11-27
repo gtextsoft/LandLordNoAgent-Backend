@@ -237,10 +237,76 @@ router.post('/', verifyToken, authorize('landlord'), async (req, res) => {
       });
     }
 
+    // Transform arrays of strings to arrays of objects for schema compliance
     const propertyData = {
       ...req.body,
       landlord: req.user._id
     };
+
+    // Transform images: if array of strings, convert to array of objects
+    if (propertyData.images && Array.isArray(propertyData.images)) {
+      propertyData.images = propertyData.images.map((img, index) => {
+        if (typeof img === 'string') {
+          return {
+            url: img,
+            caption: '',
+            isPrimary: index === 0,
+            uploadedAt: new Date()
+          };
+        }
+        return img; // Already an object
+      });
+    }
+
+    // Transform videos: if array of strings, convert to array of objects
+    if (propertyData.videos && Array.isArray(propertyData.videos)) {
+      propertyData.videos = propertyData.videos.map((video) => {
+        if (typeof video === 'string') {
+          return {
+            url: video,
+            caption: '',
+            uploadedAt: new Date()
+          };
+        }
+        return video; // Already an object
+      });
+    }
+
+    // Transform houseDocuments: if array of strings, convert to array of objects
+    if (propertyData.houseDocuments && Array.isArray(propertyData.houseDocuments)) {
+      propertyData.houseDocuments = propertyData.houseDocuments.map((doc) => {
+        if (typeof doc === 'string') {
+          return {
+            url: doc,
+            name: '',
+            type: 'other',
+            uploadedAt: new Date()
+          };
+        }
+        return doc; // Already an object
+      });
+    }
+
+    // Also handle house_documents (snake_case variant)
+    if (propertyData.house_documents && Array.isArray(propertyData.house_documents)) {
+      if (!propertyData.houseDocuments) {
+        propertyData.houseDocuments = [];
+      }
+      propertyData.houseDocuments = propertyData.houseDocuments.concat(
+        propertyData.house_documents.map((doc) => {
+          if (typeof doc === 'string') {
+            return {
+              url: doc,
+              name: '',
+              type: 'other',
+              uploadedAt: new Date()
+            };
+          }
+          return doc;
+        })
+      );
+      delete propertyData.house_documents;
+    }
 
     const property = new Property(propertyData);
     await property.save();
@@ -274,9 +340,77 @@ router.put('/:id', verifyToken, async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to update this property' });
     }
 
+    // Transform arrays of strings to arrays of objects for schema compliance
+    const updateData = { ...req.body };
+
+    // Transform images: if array of strings, convert to array of objects
+    if (updateData.images && Array.isArray(updateData.images)) {
+      updateData.images = updateData.images.map((img, index) => {
+        if (typeof img === 'string') {
+          return {
+            url: img,
+            caption: '',
+            isPrimary: index === 0,
+            uploadedAt: new Date()
+          };
+        }
+        return img; // Already an object
+      });
+    }
+
+    // Transform videos: if array of strings, convert to array of objects
+    if (updateData.videos && Array.isArray(updateData.videos)) {
+      updateData.videos = updateData.videos.map((video) => {
+        if (typeof video === 'string') {
+          return {
+            url: video,
+            caption: '',
+            uploadedAt: new Date()
+          };
+        }
+        return video; // Already an object
+      });
+    }
+
+    // Transform houseDocuments: if array of strings, convert to array of objects
+    if (updateData.houseDocuments && Array.isArray(updateData.houseDocuments)) {
+      updateData.houseDocuments = updateData.houseDocuments.map((doc) => {
+        if (typeof doc === 'string') {
+          return {
+            url: doc,
+            name: '',
+            type: 'other',
+            uploadedAt: new Date()
+          };
+        }
+        return doc; // Already an object
+      });
+    }
+
+    // Also handle house_documents (snake_case variant)
+    if (updateData.house_documents && Array.isArray(updateData.house_documents)) {
+      if (!updateData.houseDocuments) {
+        updateData.houseDocuments = [];
+      }
+      updateData.houseDocuments = updateData.houseDocuments.concat(
+        updateData.house_documents.map((doc) => {
+          if (typeof doc === 'string') {
+            return {
+              url: doc,
+              name: '',
+              type: 'other',
+              uploadedAt: new Date()
+            };
+          }
+          return doc;
+        })
+      );
+      delete updateData.house_documents;
+    }
+
     const updatedProperty = await Property.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updateData,
       { new: true, runValidators: true }
     ).populate('landlord', 'firstName lastName email phone');
 

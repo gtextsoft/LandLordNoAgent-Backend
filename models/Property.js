@@ -22,7 +22,7 @@ const propertySchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    default: 'USD'
+    default: 'NGN'
   },
   propertyType: {
     type: String,

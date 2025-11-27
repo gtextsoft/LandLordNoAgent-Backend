@@ -24,7 +24,7 @@ router.post('/payment-received', async (req, res) => {
     const payment = {
       id: paymentId,
       amount: 12000,
-      currency: 'usd',
+      currency: 'ngn',
       landlord_id: 'landlord_123',
       client_id: 'client_123',
       updated_at: new Date().toISOString(),

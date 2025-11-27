@@ -63,7 +63,7 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
       line_items: [
         {
           price_data: {
-            currency: (currency || 'USD').toLowerCase(),
+            currency: (currency || 'NGN').toLowerCase(),
             product_data: {
               name: `${row.property_title} - ${leaseDuration} month lease`,
               description: `Rental payment for ${leaseDuration} months`,

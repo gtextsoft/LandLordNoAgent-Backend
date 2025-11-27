@@ -99,7 +99,7 @@ const userSchema = new mongoose.Schema({
     },
     currency: {
       type: String,
-      default: 'USD'
+      default: 'NGN'
     }
   },
   
@@ -121,7 +121,7 @@ const userSchema = new mongoose.Schema({
     country: String,
     currency: {
       type: String,
-      default: 'USD'
+      default: 'NGN'
     },
     verified: {
       type: Boolean,

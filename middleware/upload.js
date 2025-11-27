@@ -1,51 +1,14 @@
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const { createCloudinaryStorage, deleteFromCloudinary, extractPublicIdFromUrl } = require('../config/cloudinary');
 
-// Ensure uploads directory exists
-const uploadsDir = './uploads';
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
+// Storage configuration using Cloudinary
+// Note: Files are now stored in Cloudinary instead of local disk
+const getStorageForFolder = (folder) => {
+  return createCloudinaryStorage(folder);
+};
 
-// Create subdirectories
-const subdirs = ['properties', 'users', 'documents', 'messages', 'maintenance'];
-subdirs.forEach(subdir => {
-  const subdirPath = path.join(uploadsDir, subdir);
-  if (!fs.existsSync(subdirPath)) {
-    fs.mkdirSync(subdirPath, { recursive: true });
-  }
-});
-
-// Storage configuration
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    let uploadPath = uploadsDir;
-    
-    // Determine upload path based on file type or route
-    if (req.route?.path?.includes('property')) {
-      uploadPath = path.join(uploadsDir, 'properties');
-    } else if (req.route?.path?.includes('user')) {
-      uploadPath = path.join(uploadsDir, 'users');
-    } else if (req.route?.path?.includes('document')) {
-      uploadPath = path.join(uploadsDir, 'documents');
-    } else if (req.route?.path?.includes('message')) {
-      uploadPath = path.join(uploadsDir, 'messages');
-    } else if (req.route?.path?.includes('maintenance')) {
-      uploadPath = path.join(uploadsDir, 'maintenance');
-    }
-    
-    cb(null, uploadPath);
-  },
-  filename: function (req, file, cb) {
-    // Generate unique filename
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const extension = path.extname(file.originalname);
-    const basename = path.basename(file.originalname, extension);
-    const filename = `${basename}-${uniqueSuffix}${extension}`;
-    cb(null, filename);
-  }
-});
+// Default storage for general uploads
+const storage = getStorageForFolder('general');
 
 // File filter
 const fileFilter = (req, file, cb) => {
@@ -68,7 +31,7 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Upload configuration
+// Upload configuration with Cloudinary storage
 const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
@@ -111,60 +74,91 @@ const handleUploadError = (error, req, res, next) => {
   next(error);
 };
 
-// Single file upload
-const uploadSingle = (fieldName) => [
-  upload.single(fieldName),
-  handleUploadError
-];
-
-// Multiple files upload
-const uploadMultiple = (fieldName, maxCount = 10) => [
-  upload.array(fieldName, maxCount),
-  handleUploadError
-];
-
-// Mixed files upload
-const uploadMixed = (fields) => [
-  upload.fields(fields),
-  handleUploadError
-];
-
-// Property images upload
-const uploadPropertyImages = uploadMultiple('images', 10);
-
-// User profile image upload
-const uploadProfileImage = uploadSingle('profileImage');
-
-// Document upload
-const uploadDocuments = uploadMultiple('documents', 5);
-
-// Message attachment upload
-const uploadMessageAttachment = uploadSingle('attachment');
-
-// Maintenance request images upload
-const uploadMaintenanceImages = uploadMultiple('images', 5);
-
-// Helper function to delete file
-const deleteFile = (filePath) => {
-  try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      return true;
+// Single file upload with folder-specific storage
+const uploadSingle = (fieldName, folder = 'general') => {
+  const folderStorage = getStorageForFolder(folder);
+  const folderUpload = multer({
+    storage: folderStorage,
+    fileFilter: fileFilter,
+    limits: {
+      fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024,
+      files: 1
     }
-    return false;
+  });
+  return [folderUpload.single(fieldName), handleUploadError];
+};
+
+// Multiple files upload with folder-specific storage
+const uploadMultiple = (fieldName, maxCount = 10, folder = 'general') => {
+  const folderStorage = getStorageForFolder(folder);
+  const folderUpload = multer({
+    storage: folderStorage,
+    fileFilter: fileFilter,
+    limits: {
+      fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024,
+      files: maxCount
+    }
+  });
+  return [folderUpload.array(fieldName, maxCount), handleUploadError];
+};
+
+// Mixed files upload with folder-specific storage
+const uploadMixed = (fields, folder = 'general') => {
+  const folderStorage = getStorageForFolder(folder);
+  const folderUpload = multer({
+    storage: folderStorage,
+    fileFilter: fileFilter,
+    limits: {
+      fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024
+    }
+  });
+  return [folderUpload.fields(fields), handleUploadError];
+};
+
+// Property images upload (uses 'properties' folder in Cloudinary)
+const uploadPropertyImages = uploadMultiple('images', 10, 'properties');
+
+// User profile image upload (uses 'users' folder in Cloudinary)
+const uploadProfileImage = uploadSingle('profileImage', 'users');
+
+// Document upload (uses 'documents' folder in Cloudinary)
+const uploadDocuments = uploadMultiple('documents', 5, 'documents');
+
+// Message attachment upload (uses 'messages' folder in Cloudinary)
+const uploadMessageAttachment = uploadSingle('attachment', 'messages');
+
+// Maintenance request images upload (uses 'maintenance' folder in Cloudinary)
+const uploadMaintenanceImages = uploadMultiple('images', 5, 'maintenance');
+
+// Helper function to delete file from Cloudinary
+const deleteFile = async (urlOrPublicId) => {
+  try {
+    // Extract public ID from URL if URL is provided
+    let publicId = urlOrPublicId;
+    if (urlOrPublicId && urlOrPublicId.startsWith('http')) {
+      publicId = extractPublicIdFromUrl(urlOrPublicId);
+      if (!publicId) {
+        console.error('Could not extract public ID from URL:', urlOrPublicId);
+        return false;
+      }
+    }
+    
+    // Determine resource type (default to image)
+    const resourceType = urlOrPublicId && urlOrPublicId.includes('/raw/') ? 'raw' : 'image';
+    const result = await deleteFromCloudinary(publicId, resourceType);
+    
+    return result.result === 'ok';
   } catch (error) {
-    console.error('Error deleting file:', error);
+    console.error('Error deleting file from Cloudinary:', error);
     return false;
   }
 };
 
-// Helper function to get file URL
-const getFileUrl = (req, filePath) => {
-  if (!filePath) return null;
-  
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
-  const relativePath = filePath.replace(/\\/g, '/');
-  return `${baseUrl}/${relativePath}`;
+// Helper function to get file URL (now returns Cloudinary URL directly)
+// For Cloudinary, the URL is already provided by req.file.path after upload
+const getFileUrl = (cloudinaryUrl) => {
+  // Cloudinary URLs are already complete URLs, just return them
+  return cloudinaryUrl || null;
 };
 
 module.exports = {

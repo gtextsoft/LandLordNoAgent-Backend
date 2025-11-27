@@ -23,7 +23,8 @@ const getAllowedOrigins = () => {
   const origins = [
     'http://localhost:3000',
     'https://landlordnoagent.vercel.app',
-    'https://landlord-no-agent-frontend.vercel.app' // Actual Vercel frontend URL
+    'https://landlord-no-agent-frontend.vercel.app'
+    'https://www.landlordnoagent.com' // Actual Vercel frontend URL
   ];
   
   // Add any additional origins from environment variable

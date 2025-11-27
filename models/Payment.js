@@ -18,7 +18,7 @@ const paymentSchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    default: 'USD'
+    default: 'NGN'
   },
   status: {
     type: String,
@@ -114,9 +114,9 @@ paymentSchema.index({ stripePaymentIntentId: 1 });
 
 // Virtual for formatted amount
 paymentSchema.virtual('formattedAmount').get(function() {
-  return new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat('en-NG', {
     style: 'currency',
-    currency: this.currency
+    currency: this.currency || 'NGN'
   }).format(this.amount);
 });
 

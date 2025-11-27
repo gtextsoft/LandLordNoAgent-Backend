@@ -40,7 +40,7 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
       });
     }
 
-    const { applicationId, amount, currency = 'usd' } = req.body;
+    const { applicationId, amount, currency = 'ngn' } = req.body;
 
     if (!applicationId || !amount) {
       return res.status(400).json({ 
