@@ -81,8 +81,15 @@ const apiLimiter = rateLimit({
 });
 
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10
+  windowMs: 15 * 60 * 1000, // 15 minutes window
+  max: 20, // Allow 20 requests per 15 minutes (more reasonable for legitimate users)
+  message: 'Too many authentication attempts. Please try again in a few minutes.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Skip rate limiting for successful logins to avoid blocking legitimate users
+  skipSuccessfulRequests: false,
+  // Skip rate limiting for failed requests after a certain number (handled by login attempt tracking)
+  skipFailedRequests: false
 });
 
 app.use('/api', apiLimiter);
