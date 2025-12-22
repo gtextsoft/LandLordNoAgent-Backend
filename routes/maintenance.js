@@ -2,6 +2,7 @@ const express = require('express');
 const MaintenanceRequest = require('../models/MaintenanceRequest');
 const Application = require('../models/Application');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { notifyMaintenanceRequest } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -147,6 +148,14 @@ router.post('/', verifyToken, async (req, res) => {
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);
 
+    // Notify landlord about new maintenance request
+    try {
+      await notifyMaintenanceRequest(maintenanceRequest, 'submitted', property.property.landlord.toString());
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
+
     res.status(201).json({
       message: 'Maintenance request submitted successfully',
       request: maintenanceRequest
@@ -209,6 +218,16 @@ router.put('/:id', verifyToken, async (req, res) => {
       { path: 'tenant', select: 'firstName lastName email phone' },
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);
+
+    // Notify tenant if status changed to completed
+    if (req.body.status === 'completed' && req.body.status !== request.status) {
+      try {
+        await notifyMaintenanceRequest(updatedRequest, 'completed', updatedRequest.tenant._id.toString());
+      } catch (notifError) {
+        console.error('Error sending notification:', notifError);
+        // Don't fail the request if notification fails
+      }
+    }
 
     res.json({
       message: 'Maintenance request updated successfully',

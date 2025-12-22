@@ -4,6 +4,7 @@ const Property = require('../models/Property');
 const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { notifyApplicationStatusChange, notifyNewApplication } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -286,6 +287,22 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);
 
+    // Notify landlord about new application
+    try {
+      await notifyNewApplication(application, property.landlord.toString());
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
+
+    // Notify client that application was received
+    try {
+      await notifyApplicationStatusChange(application, 'pending', req.user._id.toString());
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
+
     res.status(201).json({
       message: 'Application submitted successfully',
       application
@@ -373,6 +390,20 @@ router.put('/:id', verifyToken, async (req, res) => {
       { path: 'client', select: 'firstName lastName email phone' },
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);
+
+    // Notify client if status changed
+    if (req.body.status && req.body.status !== application.status) {
+      try {
+        await notifyApplicationStatusChange(
+          updatedApplication, 
+          req.body.status, 
+          updatedApplication.client._id.toString()
+        );
+      } catch (notifError) {
+        console.error('Error sending notification:', notifError);
+        // Don't fail the request if notification fails
+      }
+    }
 
     res.json({
       message: 'Application updated successfully',

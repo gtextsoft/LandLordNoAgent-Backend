@@ -214,12 +214,13 @@ const propertySchema = new mongoose.Schema({
 // Indexes for performance
 propertySchema.index({ landlord: 1 });
 propertySchema.index({ status: 1, isAvailable: 1 });
+propertySchema.index({ isVerified: 1, isAvailable: 1, status: 1 }); // Compound index for public property queries
 propertySchema.index({ 'address.city': 1, 'address.state': 1 });
 propertySchema.index({ price: 1 });
 propertySchema.index({ propertyType: 1 });
 propertySchema.index({ bedrooms: 1, bathrooms: 1 });
 propertySchema.index({ createdAt: -1 });
-// propertySchema.index({ slug: 1 });
+// Note: slug index is automatically created by unique: true constraint
 
 // Virtual for full address
 propertySchema.virtual('fullAddress').get(function() {

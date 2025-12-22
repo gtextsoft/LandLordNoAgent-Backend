@@ -2,6 +2,7 @@ const express = require('express');
 const Message = require('../models/Message');
 const Application = require('../models/Application');
 const { verifyToken } = require('../middleware/auth');
+const { notifyNewMessage } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -92,6 +93,17 @@ router.post('/', verifyToken, async (req, res) => {
       { path: 'sender', select: 'firstName lastName avatar' },
       { path: 'receiver', select: 'firstName lastName avatar' }
     ]);
+
+    // Notify receiver about new message
+    try {
+      const senderName = newMessage.sender?.firstName 
+        ? `${newMessage.sender.firstName} ${newMessage.sender.lastName || ''}`.trim()
+        : newMessage.sender?.email || 'Someone';
+      await notifyNewMessage(newMessage, receiverId.toString(), senderName);
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
 
     res.status(201).json({
       message: 'Message sent successfully',

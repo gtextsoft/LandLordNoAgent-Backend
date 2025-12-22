@@ -7,6 +7,7 @@ const MaintenanceRequest = require('../models/MaintenanceRequest');
 const ViewingAppointment = require('../models/ViewingAppointment');
 const Message = require('../models/Message');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { notifyPropertyVerification } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -247,6 +248,14 @@ router.put('/properties/:id/verify', verifyToken, authorize('admin'), async (req
 
     if (!property) {
       return res.status(404).json({ message: 'Property not found' });
+    }
+
+    // Notify landlord about property verification status
+    try {
+      await notifyPropertyVerification(property, isVerified, property.landlord._id.toString());
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
     }
 
     res.json({

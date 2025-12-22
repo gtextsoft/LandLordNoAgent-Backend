@@ -1,13 +1,177 @@
 const express = require('express');
 const router = express.Router();
-const { Resend } = require('resend');
+const Notification = require('../models/Notification');
+const { verifyToken } = require('../middleware/auth');
 
-const resendApiKey = process.env.RESEND_API_KEY;
-const fromAddress = process.env.EMAIL_FROM || 'no-reply@landlordnoagent.app';
+/**
+ * GET /api/notifications
+ * Get notifications for current user
+ * @access Private
+ */
+router.get('/', verifyToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, unreadOnly = false, type } = req.query;
+    
+    const userId = req.user._id;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const query = { user: userId, isActive: true };
+    
+    if (unreadOnly === 'true') {
+      query.isRead = false;
+    }
+    
+    if (type) {
+      query.type = type;
+    }
+    
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip)
+      .populate('relatedEntity.id', 'title name email');
+    
+    const total = await Notification.countDocuments(query);
+    const unreadCount = await Notification.countDocuments({ 
+      user: userId, 
+      isRead: false, 
+      isActive: true 
+    });
+    
+    res.json({
+      notifications,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        total,
+        limit: parseInt(limit)
+      },
+      unreadCount
+    });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({ message: 'Server error while fetching notifications' });
+  }
+});
+
+/**
+ * GET /api/notifications/unread-count
+ * Get unread notification count
+ * @access Private
+ */
+router.get('/unread-count', verifyToken, async (req, res) => {
+  try {
+    const unreadCount = await Notification.countDocuments({ 
+      user: req.user._id, 
+      isRead: false, 
+      isActive: true 
+    });
+    
+    res.json({ unreadCount });
+  } catch (error) {
+    console.error('Get unread count error:', error);
+    res.status(500).json({ message: 'Server error while fetching unread count' });
+  }
+});
+
+/**
+ * GET /api/notifications/:id
+ * Get single notification
+ * @access Private
+ */
+router.get('/:id', verifyToken, async (req, res) => {
+  try {
+    const notification = await Notification.findOne({
+      _id: req.params.id,
+      user: req.user._id
+    }).populate('relatedEntity.id');
+    
+    if (!notification) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+    
+    res.json({ notification });
+  } catch (error) {
+    console.error('Get notification error:', error);
+    res.status(500).json({ message: 'Server error while fetching notification' });
+  }
+});
+
+/**
+ * PATCH /api/notifications/:id/read
+ * Mark notification as read
+ * @access Private
+ */
+router.patch('/:id/read', verifyToken, async (req, res) => {
+  try {
+    const notification = await Notification.findOne({
+      _id: req.params.id,
+      user: req.user._id
+    });
+    
+    if (!notification) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+    
+    await notification.markAsRead();
+    
+    res.json({ message: 'Notification marked as read', notification });
+  } catch (error) {
+    console.error('Mark notification as read error:', error);
+    res.status(500).json({ message: 'Server error while updating notification' });
+  }
+});
+
+/**
+ * PATCH /api/notifications/read-all
+ * Mark all notifications as read
+ * @access Private
+ */
+router.patch('/read-all', verifyToken, async (req, res) => {
+  try {
+    const result = await Notification.markAllAsRead(req.user._id);
+    
+    res.json({ 
+      message: 'All notifications marked as read',
+      updatedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Mark all notifications as read error:', error);
+    res.status(500).json({ message: 'Server error while updating notifications' });
+  }
+});
+
+/**
+ * DELETE /api/notifications/:id
+ * Delete notification
+ * @access Private
+ */
+router.delete('/:id', verifyToken, async (req, res) => {
+  try {
+    const notification = await Notification.findOne({
+      _id: req.params.id,
+      user: req.user._id
+    });
+    
+    if (!notification) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+    
+    // Soft delete by marking as inactive
+    notification.isActive = false;
+    await notification.save();
+    
+    res.json({ message: 'Notification deleted successfully' });
+  } catch (error) {
+    console.error('Delete notification error:', error);
+    res.status(500).json({ message: 'Server error while deleting notification' });
+  }
+});
 
 /**
  * POST /api/notifications/payment-received
  * Send payment received notification to landlord
+ * @access Private (called internally or via webhook)
  */
 router.post('/payment-received', async (req, res) => {
   try {
@@ -17,68 +181,13 @@ router.post('/payment-received', async (req, res) => {
       return res.status(400).json({ error: 'Missing payment ID' });
     }
 
-    // TODO: Replace with MongoDB payment lookup
-    console.log('Processing payment notification for payment:', paymentId);
-
-    // Simulate payment data (replace with MongoDB query)
-    const payment = {
-      id: paymentId,
-      amount: 12000,
-      currency: 'ngn',
-      landlord_id: 'landlord_123',
-      client_id: 'client_123',
-      updated_at: new Date().toISOString(),
-      commission_amount: 1200,
-      landlord_amount: 10800,
-      landlord: {
-        email: 'landlord@example.com',
-        full_name: 'Jane Smith',
-      },
-      application: {
-        client: {
-          full_name: 'John Doe',
-        },
-        property: {
-          title: 'Beautiful Apartment',
-          id: 'prop_123',
-        },
-      },
-    };
-
-    // Send email notification to landlord
-    try {
-      if (resendApiKey) {
-        const resend = new Resend(resendApiKey);
-        await resend.emails.send({
-          from: fromAddress,
-          to: payment.landlord?.email || '',
-          subject: `Payment Received - ${payment.application?.property?.title}`,
-          html: `
-            <p>Hi ${payment.landlord?.full_name || 'Landlord'},</p>
-            <p>You have received a payment of ${payment.currency.toUpperCase()} ${(payment.amount / 100).toFixed(2)} from ${payment.application?.client?.full_name || 'Client'} for ${payment.application?.property?.title}.</p>
-            <p><strong>Receipt Number:</strong> RCT-${payment.id.substring(0, 8).toUpperCase()}</p>
-            <p><strong>Payment Date:</strong> ${new Date(payment.updated_at).toLocaleDateString()}</p>
-            <p><strong>Commission:</strong> ${payment.currency.toUpperCase()} ${((payment.commission_amount || 0) / 100).toFixed(2)}</p>
-            <p><strong>Your Amount:</strong> ${payment.currency.toUpperCase()} ${((payment.landlord_amount || payment.amount) / 100).toFixed(2)}</p>
-            <p>Thank you for using LandLordNoAgent!</p>
-          `,
-          text: `Payment received from ${payment.application?.client?.full_name} for ${payment.application?.property?.title}.`,
-        });
-        console.log('Payment notification sent to landlord:', payment.landlord?.email);
-      } else {
-        console.warn('RESEND_API_KEY not set, skipping email notification');
-      }
-    } catch (emailError) {
-      console.error('Failed to send email notification:', emailError);
-      // Don't fail the request if email fails
-    }
-
-    // TODO: Create in-app notification in MongoDB
-    console.log('Creating in-app notification for landlord:', payment.landlord_id);
+    // This endpoint is kept for backward compatibility
+    // Payment notifications should be created via notification service
+    console.log('Payment notification endpoint called for payment:', paymentId);
 
     res.json({
       success: true,
-      message: 'Landlord notified successfully',
+      message: 'Payment notification endpoint (use notification service instead)',
     });
   } catch (error) {
     console.error('Notification error:', error);

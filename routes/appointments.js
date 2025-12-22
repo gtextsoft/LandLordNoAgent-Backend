@@ -2,6 +2,7 @@ const express = require('express');
 const ViewingAppointment = require('../models/ViewingAppointment');
 const Property = require('../models/Property');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { notifyViewingAppointment } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -164,6 +165,22 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
       { path: 'client', select: 'firstName lastName email phone' },
       { path: 'landlord', select: 'firstName lastName email phone' }
     ]);
+
+    // Notify landlord about new viewing appointment
+    try {
+      await notifyViewingAppointment(appointment, 'scheduled', property.landlord.toString());
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
+
+    // Notify client
+    try {
+      await notifyViewingAppointment(appointment, 'scheduled', req.user._id.toString());
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
 
     res.status(201).json({
       message: 'Viewing appointment requested successfully',

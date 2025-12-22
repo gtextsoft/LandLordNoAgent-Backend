@@ -1,6 +1,7 @@
 const express = require('express');
 const User = require('../models/User');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { notifyKYCStatus } = require('../utils/notifications');
 
 const router = express.Router();
 
@@ -360,6 +361,14 @@ If you have any questions, please contact our support team.`;
     }
 
     await user.save();
+
+    // Notify user about KYC status change
+    try {
+      await notifyKYCStatus(user, status === 'verified');
+    } catch (notifError) {
+      console.error('Error sending notification:', notifError);
+      // Don't fail the request if notification fails
+    }
 
     res.json({
       message: 'KYC status updated successfully',
