@@ -258,9 +258,23 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
 
       // Add KYC docs if provided
       if (kyc_docs && Object.keys(kyc_docs).length > 0) {
+        // Map frontend document types (camelCase) to backend enum values (snake_case)
+        const documentTypeMap = {
+          'bankStatement': 'bank_statement',
+          'bank_statement': 'bank_statement',
+          'employmentLetter': 'employment_letter',
+          'employment_letter': 'employment_letter',
+          'payStub': 'pay_stub',
+          'pay_stub': 'pay_stub',
+          'id': 'id',
+          'referenceLetter': 'reference_letter',
+          'reference_letter': 'reference_letter',
+          'other': 'other'
+        };
+        
         applicationData.documents = Object.entries(kyc_docs).map(([type, url]) => ({
-          type,
-          url: String(url), // Convert to string (JavaScript, not TypeScript)
+          type: documentTypeMap[type] || 'other', // Default to 'other' if unknown type
+          url: String(url),
           uploadedAt: new Date()
         }));
       }
