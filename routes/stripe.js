@@ -3,59 +3,66 @@ const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 // const { verifyToken } = require('../middleware/auth');
 const { verifyToken } = require('../middleware/auth');
+const {
+  handleCheckoutSessionCompleted,
+  handlePaymentIntentSucceeded,
+  handlePaymentIntentFailed
+} = require('../services/stripeWebhookHandlers');
 
 /**
  * POST /api/stripe/create-checkout
  * Create a Stripe checkout session for payment
  */
 
-console.log('verifyToken is:', verifyToken);
-
 router.post('/create-checkout', verifyToken, async (req, res) => {
   try {
-    console.log('=== STRIPE CREATE CHECKOUT DEBUG ===');
-    console.log('Request received at:', new Date().toISOString());
+    // NOTE: Frontend currently uses `/api/payments/create-checkout`, not this endpoint.
+    // We keep it for compatibility, but it must not rely on hardcoded placeholder data.
+    const { applicationId, amount, currency = 'NGN' } = req.body;
 
-    const { applicationId, clientId, landlordId, propertyId, currency, description } = req.body;
-
-    // Validate required fields
-    if (!applicationId || !clientId || !landlordId || !propertyId) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!applicationId) {
+      return res.status(400).json({ error: 'applicationId is required' });
     }
 
-    console.log('Request data:', { applicationId, clientId, landlordId, propertyId, currency });
+    // Load application + property to validate ownership and determine payment type.
+    const Application = require('../models/Application');
+    const Property = require('../models/Property');
 
-    // TODO: Replace with MongoDB backend data loading
-    const row = {
-      id: applicationId,
-      client_id: clientId,
-      lease_duration: 12,
-      property_id: propertyId,
-      property_title: description || 'Property Rental',
-      property_price: 1000,
-      property_duration: 12,
-      property_landlord_id: landlordId,
-      property_is_available: true,
-    };
+    const application = await Application.findById(applicationId)
+      .populate('property', 'title price isAvailable')
+      .populate('client', '_id email');
 
-    console.log('Application data loaded:', row);
-
-    // Validate the application belongs to the client
-    if (row.client_id !== clientId) {
+    if (!application) {
       return res.status(404).json({ error: 'Application not found' });
     }
 
-    // Validate the property is available
-    if (!row.property_is_available) {
+    if (String(application.client?._id) !== String(req.user?._id)) {
+      return res.status(403).json({ error: 'Not authorized to pay for this application' });
+    }
+
+    if (application.property?.isAvailable === false) {
       return res.status(400).json({ error: 'Property is no longer available' });
     }
 
-    // Calculate total amount
-    const leaseDuration = row.lease_duration || row.property_duration || 12;
-    const monthlyRent = row.property_price;
-    const totalAmount = Math.round(monthlyRent * leaseDuration * 100); // Convert to cents
+    // Default amount: use request amount if provided, else use application fee if set, else fall back to property price.
+    const resolvedAmount =
+      Number(amount) ||
+      Number(application.applicationFee?.amount) ||
+      Number(application.property?.price) ||
+      0;
 
-    console.log('Payment calculation:', { monthlyRent, leaseDuration, totalAmount, currency });
+    if (!resolvedAmount || Number.isNaN(resolvedAmount) || resolvedAmount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' });
+    }
+
+    const isRentPayment = application.status === 'approved' || application.status === 'accepted';
+    const paymentType = isRentPayment ? 'rent' : 'application_fee';
+    const productName = isRentPayment
+      ? `Rent Payment - ${application.property?.title || 'Property'} (Escrow)`
+      : `Application Fee - ${application.property?.title || 'Property'}`;
+    const description = isRentPayment
+      ? `Rent payment for property: ${application.property?.title || 'Property'}. Payment will be held in escrow.`
+      : `Application fee for property: ${application.property?.title || 'Property'}`;
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -63,12 +70,12 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
       line_items: [
         {
           price_data: {
-            currency: (currency || 'NGN').toLowerCase(),
+            currency: String(currency).toLowerCase(),
             product_data: {
-              name: `${row.property_title} - ${leaseDuration} month lease`,
-              description: `Rental payment for ${leaseDuration} months`,
+              name: productName,
+              description,
             },
-            unit_amount: totalAmount,
+            unit_amount: Math.round(resolvedAmount * 100),
           },
           quantity: 1,
         },
@@ -78,15 +85,10 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
       cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/cancel`,
       metadata: {
         applicationId,
-        clientId,
-        landlordId,
-        propertyId,
-        leaseDuration: leaseDuration.toString(),
-        monthlyRent: monthlyRent.toString(),
+        userId: req.user?._id?.toString(),
+        type: paymentType
       },
     });
-
-    console.log('Stripe session created:', session.id);
 
     res.json({
       sessionId: session.id,
@@ -105,11 +107,9 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
  * POST /api/stripe/confirm
  * Confirm a Stripe payment session
  */
-router.post('/confirm', async (req, res) => {
+router.post('/confirm', verifyToken, async (req, res) => {
   try {
-    console.log('=== STRIPE CONFIRM DEBUG ===');
     const { session_id } = req.body;
-    console.log('Session ID:', session_id);
 
     if (!session_id) {
       return res.status(400).json({ error: 'Missing session_id' });
@@ -121,26 +121,27 @@ router.post('/confirm', async (req, res) => {
       return res.status(409).json({ error: 'Payment not completed' });
     }
 
-    // TODO: Replace with MongoDB backend payment processing
-    console.log('Payment confirmed for session:', session.id);
+    // Ensure the session belongs to the authenticated user if metadata includes userId.
+    const sessionUserId = session.metadata?.userId;
+    if (sessionUserId && req.user?._id && String(sessionUserId) !== String(req.user._id)) {
+      return res.status(403).json({ error: 'Not authorized to confirm this payment' });
+    }
 
-    const paymentData = {
-      sessionId: session.id,
-      paymentIntentId: session.payment_intent,
-      amount: session.amount_total,
-      currency: session.currency,
-      status: 'completed',
-      applicationId: session.metadata?.applicationId,
-      clientId: session.metadata?.clientId,
-      landlordId: session.metadata?.landlordId,
-      propertyId: session.metadata?.propertyId,
-    };
-
-    console.log('Payment data processed:', paymentData);
+    // Create/update MongoDB payment using the shared idempotent handler.
+    const payment = await handleCheckoutSessionCompleted(session);
 
     res.json({
       success: true,
-      payment: paymentData,
+      payment: payment
+        ? {
+            id: payment._id,
+            amount: payment.amount,
+            currency: payment.currency,
+            status: payment.status,
+            stripeSessionId: payment.stripeSessionId,
+            stripePaymentIntentId: payment.stripePaymentIntentId
+          }
+        : null,
     });
   } catch (error) {
     console.error('Payment confirmation error:', error);
@@ -186,22 +187,19 @@ router.post(
       switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data.object;
-          console.log('Checkout session completed:', session.id);
-          // TODO: Process payment completion in MongoDB
+          await handleCheckoutSessionCompleted(session);
           break;
         }
 
         case 'payment_intent.succeeded': {
           const paymentIntent = event.data.object;
-          console.log('Payment intent succeeded:', paymentIntent.id);
-          // TODO: Process successful payment in MongoDB
+          await handlePaymentIntentSucceeded(paymentIntent);
           break;
         }
 
         case 'payment_intent.payment_failed': {
           const paymentIntent = event.data.object;
-          console.log('Payment intent failed:', paymentIntent.id);
-          // TODO: Handle failed payment in MongoDB
+          await handlePaymentIntentFailed(paymentIntent);
           break;
         }
 

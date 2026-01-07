@@ -6,6 +6,12 @@ const Payment = require('../models/Payment');
 const MaintenanceRequest = require('../models/MaintenanceRequest');
 const ViewingAppointment = require('../models/ViewingAppointment');
 const Message = require('../models/Message');
+const ModerationViolation = require('../models/ModerationViolation');
+const Report = require('../models/Report');
+const Dispute = require('../models/Dispute');
+const Notification = require('../models/Notification');
+const PlatformSettings = require('../models/PlatformSettings');
+const AuditLog = require('../models/AuditLog');
 const { verifyToken, authorize } = require('../middleware/auth');
 const { notifyPropertyVerification } = require('../utils/notifications');
 
@@ -88,6 +94,800 @@ router.get('/dashboard', async (req, res) => {
   } catch (error) {
     console.error('Admin dashboard error:', error);
     res.status(500).json({ message: 'Server error while fetching dashboard data' });
+  }
+});
+
+// @route   GET /api/admin/platform-settings
+// @desc    Get current platform settings (singleton)
+// @access  Private (Admin)
+router.get('/platform-settings', async (req, res) => {
+  try {
+    const settings = await PlatformSettings.getCurrent();
+    res.json({ settings });
+  } catch (error) {
+    console.error('Get platform settings error:', error);
+    res.status(500).json({ message: 'Server error while fetching platform settings' });
+  }
+});
+
+// @route   PUT /api/admin/platform-settings
+// @desc    Update platform settings (excluding commission rate, which has its own audited endpoint)
+// @access  Private (Admin)
+router.put('/platform-settings', async (req, res) => {
+  try {
+    const settings = await PlatformSettings.getCurrent();
+
+    const allowedFields = [
+      'platformFee',
+      'maxPropertiesPerLandlord',
+      'maxApplicationsPerClient',
+      'autoApproveProperties',
+      'requireKyc',
+      'emailNotifications',
+      'maintenanceMode'
+    ];
+
+    const before = {};
+    const changes = {};
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        before[field] = settings[field];
+        settings[field] = req.body[field];
+        changes[field] = { from: before[field], to: settings[field] };
+      }
+    }
+
+    settings.lastUpdatedBy = req.user._id;
+    settings.lastUpdatedAt = new Date();
+
+    await settings.save();
+
+    // Audit log (best-effort)
+    try {
+      await AuditLog.create({
+        action: 'platform_settings_updated',
+        entityType: 'PlatformSettings',
+        entityId: settings._id,
+        userId: req.user._id,
+        details: { changes },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent')
+      });
+    } catch (auditError) {
+      console.error('AuditLog platform_settings_updated error:', auditError);
+    }
+
+    res.json({
+      message: 'Platform settings updated successfully',
+      settings
+    });
+  } catch (error) {
+    console.error('Update platform settings error:', error);
+    res.status(500).json({ message: 'Server error while updating platform settings' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bulk operations + audit logs + admin notification center
+// ---------------------------------------------------------------------------
+
+async function deleteUserCascade(userId) {
+  const user = await User.findById(userId);
+  if (!user) return { ok: false, code: 404, message: 'User not found' };
+  if (user.role === 'admin') return { ok: false, code: 403, message: 'Cannot delete admin users' };
+
+  // Delete all related data using correct schema fields
+  await Property.deleteMany({ landlord: userId });
+
+  const applications = await Application.find({
+    $or: [{ client: userId }, { landlord: userId }]
+  }).select('_id');
+  const applicationIds = applications.map(a => a._id);
+
+  if (applicationIds.length) {
+    await Payment.deleteMany({ application: { $in: applicationIds } });
+    await Message.deleteMany({ application: { $in: applicationIds } });
+  }
+
+  await Application.deleteMany({ _id: { $in: applicationIds } });
+  await MaintenanceRequest.deleteMany({ $or: [{ tenant: userId }, { landlord: userId }] });
+  await ViewingAppointment.deleteMany({ $or: [{ client: userId }, { landlord: userId }] });
+
+  // Notifications for the user
+  await Notification.deleteMany({ user: userId });
+
+  await User.findByIdAndDelete(userId);
+  return { ok: true };
+}
+
+async function deletePropertyCascade(propertyId) {
+  const property = await Property.findById(propertyId);
+  if (!property) return { ok: false, code: 404, message: 'Property not found' };
+
+  const applications = await Application.find({ property: propertyId }).select('_id');
+  const applicationIds = applications.map(a => a._id);
+
+  if (applicationIds.length) {
+    await Payment.deleteMany({ application: { $in: applicationIds } });
+    await Message.deleteMany({ application: { $in: applicationIds } });
+  }
+
+  await Application.deleteMany({ _id: { $in: applicationIds } });
+  await MaintenanceRequest.deleteMany({ property: propertyId });
+  await ViewingAppointment.deleteMany({ property: propertyId });
+
+  await Property.findByIdAndDelete(propertyId);
+  return { ok: true };
+}
+
+/**
+ * @route   GET /api/admin/audit-logs
+ * @desc    List audit logs with basic filtering (resource type, search, date ranges)
+ * @access  Private (Admin)
+ */
+router.get('/audit-logs', async (req, res) => {
+  try {
+    const { resource_type, search, dateRange = 'all', page = 1, limit = 100 } = req.query;
+    const filters = {};
+
+    if (resource_type && resource_type !== 'all') {
+      // stored as entityType (e.g. User/Property/Payment/System)
+      const mapping = {
+        user: 'User',
+        property: 'Property',
+        application: 'Application',
+        payment: 'Payment',
+        system: 'System'
+      };
+      filters.entityType = mapping[resource_type] || resource_type;
+    }
+
+    // Date range filter
+    if (dateRange && dateRange !== 'all') {
+      const now = new Date();
+      let start = null;
+      if (dateRange === 'today') {
+        start = new Date(now);
+        start.setHours(0, 0, 0, 0);
+      } else if (dateRange === 'week') {
+        start = new Date(now);
+        start.setDate(now.getDate() - 7);
+      } else if (dateRange === 'month') {
+        start = new Date(now);
+        start.setDate(now.getDate() - 30);
+      }
+      if (start) filters.createdAt = { $gte: start };
+    }
+
+    // Search (best-effort): action or details JSON string
+    if (search) {
+      const rx = new RegExp(search, 'i');
+      filters.$or = [{ action: rx }];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [rows, total] = await Promise.all([
+      AuditLog.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('userId', 'email firstName lastName role'),
+      AuditLog.countDocuments(filters)
+    ]);
+
+    const logs = rows.map(l => ({
+      id: l._id,
+      user_id: l.userId?._id || l.userId,
+      action: l.action,
+      resource_type: (l.entityType || 'System').toString().toLowerCase(),
+      resource_id: l.entityId ? l.entityId.toString() : undefined,
+      details: typeof l.details === 'string' ? l.details : JSON.stringify(l.details || {}),
+      ip_address: l.ipAddress,
+      user_agent: l.userAgent,
+      created_at: l.createdAt,
+      user: l.userId
+        ? {
+            id: l.userId._id,
+            email: l.userId.email,
+            role: l.userId.role,
+            firstName: l.userId.firstName,
+            lastName: l.userId.lastName,
+            is_verified: l.userId.isVerified
+          }
+        : undefined
+    }));
+
+    res.json({
+      logs,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        total,
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get audit logs error:', error);
+    res.status(500).json({ message: 'Server error while fetching audit logs' });
+  }
+});
+
+/**
+ * @route   POST /api/admin/bulk/users
+ * @desc    Bulk operations on users (verify/unverify/suspend/activate/delete)
+ * @access  Private (Admin)
+ */
+router.post('/bulk/users', async (req, res) => {
+  try {
+    const { userIds, action } = req.body || {};
+
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ message: 'userIds[] is required' });
+    }
+    if (!['verify', 'unverify', 'suspend', 'activate', 'delete'].includes(action)) {
+      return res.status(400).json({ message: 'Invalid bulk user action' });
+    }
+
+    if (action === 'delete') {
+      const results = { deleted: 0, failed: 0, failures: [] };
+      for (const id of userIds) {
+        const r = await deleteUserCascade(id);
+        if (r.ok) results.deleted += 1;
+        else {
+          results.failed += 1;
+          results.failures.push({ id, message: r.message });
+        }
+      }
+
+      await AuditLog.create({
+        action: 'admin_bulk_users_deleted',
+        entityType: 'User',
+        userId: req.user._id,
+        details: results,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent')
+      }).catch(() => undefined);
+
+      return res.json({ message: 'Bulk user delete completed', results });
+    }
+
+    const update = {};
+    if (action === 'verify') update.isVerified = true;
+    if (action === 'unverify') update.isVerified = false;
+    if (action === 'suspend') update.isActive = false;
+    if (action === 'activate') update.isActive = true;
+
+    const result = await User.updateMany({ _id: { $in: userIds } }, { $set: update });
+
+    await AuditLog.create({
+      action: `admin_bulk_users_${action}`,
+      entityType: 'User',
+      userId: req.user._id,
+      details: { userIds, update, matched: result.matchedCount, modified: result.modifiedCount },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent')
+    }).catch(() => undefined);
+
+    res.json({
+      message: `Bulk user ${action} completed`,
+      matched: result.matchedCount,
+      modified: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Bulk users error:', error);
+    res.status(500).json({ message: 'Server error while running bulk user operation' });
+  }
+});
+
+/**
+ * @route   POST /api/admin/bulk/properties
+ * @desc    Bulk operations on properties (verify/unverify/feature/unfeature/delete)
+ * @access  Private (Admin)
+ */
+router.post('/bulk/properties', async (req, res) => {
+  try {
+    const { propertyIds, action } = req.body || {};
+
+    if (!Array.isArray(propertyIds) || propertyIds.length === 0) {
+      return res.status(400).json({ message: 'propertyIds[] is required' });
+    }
+    if (!['verify', 'unverify', 'feature', 'unfeature', 'delete'].includes(action)) {
+      return res.status(400).json({ message: 'Invalid bulk property action' });
+    }
+
+    if (action === 'delete') {
+      const results = { deleted: 0, failed: 0, failures: [] };
+      for (const id of propertyIds) {
+        const r = await deletePropertyCascade(id);
+        if (r.ok) results.deleted += 1;
+        else {
+          results.failed += 1;
+          results.failures.push({ id, message: r.message });
+        }
+      }
+
+      await AuditLog.create({
+        action: 'admin_bulk_properties_deleted',
+        entityType: 'Property',
+        userId: req.user._id,
+        details: results,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent')
+      }).catch(() => undefined);
+
+      return res.json({ message: 'Bulk property delete completed', results });
+    }
+
+    const update = {};
+    if (action === 'verify') {
+      update.isVerified = true;
+      update.verifiedAt = new Date();
+      update.verifiedBy = req.user._id;
+    }
+    if (action === 'unverify') {
+      update.isVerified = false;
+      update.verifiedAt = null;
+      update.verifiedBy = null;
+    }
+    if (action === 'feature') update.featured = true;
+    if (action === 'unfeature') update.featured = false;
+
+    const result = await Property.updateMany({ _id: { $in: propertyIds } }, { $set: update });
+
+    await AuditLog.create({
+      action: `admin_bulk_properties_${action}`,
+      entityType: 'Property',
+      userId: req.user._id,
+      details: { propertyIds, update, matched: result.matchedCount, modified: result.modifiedCount },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent')
+    }).catch(() => undefined);
+
+    res.json({
+      message: `Bulk property ${action} completed`,
+      matched: result.matchedCount,
+      modified: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Bulk properties error:', error);
+    res.status(500).json({ message: 'Server error while running bulk property operation' });
+  }
+});
+
+/**
+ * @route   DELETE /api/admin/properties/:id
+ * @desc    Delete a property and related data
+ * @access  Private (Admin)
+ */
+router.delete('/properties/:id', async (req, res) => {
+  try {
+    const r = await deletePropertyCascade(req.params.id);
+    if (!r.ok) return res.status(r.code).json({ message: r.message });
+
+    await AuditLog.create({
+      action: 'admin_property_deleted',
+      entityType: 'Property',
+      entityId: req.params.id,
+      userId: req.user._id,
+      details: { propertyId: req.params.id },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent')
+    }).catch(() => undefined);
+
+    res.json({ message: 'Property deleted successfully' });
+  } catch (error) {
+    console.error('Delete property error:', error);
+    res.status(500).json({ message: 'Server error while deleting property' });
+  }
+});
+
+/**
+ * @route   GET /api/admin/notifications
+ * @desc    Get admin notifications for current admin user
+ * @access  Private (Admin)
+ */
+router.get('/notifications', async (req, res) => {
+  try {
+    const { status = 'all', priority = 'all', page = 1, limit = 50 } = req.query;
+
+    const query = { user: req.user._id };
+    if (status === 'archived') query.isActive = false;
+    else query.isActive = true;
+
+    if (status === 'unread') query.isRead = false;
+    if (status === 'read') query.isRead = true;
+
+    if (priority !== 'all') query.priority = priority;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [rows, total] = await Promise.all([
+      Notification.find(query).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      Notification.countDocuments(query)
+    ]);
+
+    const typeMap = (t) => {
+      if (!t) return 'custom';
+      if (t.startsWith('payment')) return 'payment';
+      if (t.startsWith('kyc')) return 'user_verification';
+      if (t.startsWith('property')) return 'property_review';
+      if (t === 'system_announcement') return 'system';
+      return 'custom';
+    };
+
+    const notifications = rows.map(n => ({
+      id: n._id,
+      admin_id: n.user,
+      type: typeMap(n.type),
+      title: n.title,
+      message: n.message,
+      priority: n.priority || 'medium',
+      status: n.isActive ? (n.isRead ? 'read' : 'unread') : 'archived',
+      action_required: !!(n.metadata && n.metadata.actionRequired),
+      action_url: n.actionUrl,
+      created_at: n.createdAt,
+      read_at: n.readAt
+    }));
+
+    res.json({
+      notifications,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        total,
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get admin notifications error:', error);
+    res.status(500).json({ message: 'Server error while fetching admin notifications' });
+  }
+});
+
+/**
+ * @route   POST /api/admin/notifications
+ * @desc    Create a notification for this admin (or broadcast to all admins)
+ * @access  Private (Admin)
+ */
+router.post('/notifications', async (req, res) => {
+  try {
+    const { type = 'other', title, message, priority = 'medium', action_required = false, action_url, broadcast = true } = req.body || {};
+
+    if (!title || !message) {
+      return res.status(400).json({ message: 'title and message are required' });
+    }
+
+    const adminIds = broadcast
+      ? (await User.find({ role: 'admin' }).select('_id')).map(u => u._id)
+      : [req.user._id];
+
+    const created = await Notification.insertMany(
+      adminIds.map(id => ({
+        user: id,
+        type: type === 'custom' ? 'other' : type,
+        title,
+        message,
+        priority,
+        actionUrl: action_url || undefined,
+        metadata: { actionRequired: !!action_required, createdBy: req.user._id.toString() }
+      }))
+    );
+
+    await AuditLog.create({
+      action: 'admin_notification_created',
+      entityType: 'Notification',
+      userId: req.user._id,
+      details: { count: created.length, title, priority, broadcast },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent')
+    }).catch(() => undefined);
+
+    res.status(201).json({ message: 'Notification created', count: created.length });
+  } catch (error) {
+    console.error('Create admin notification error:', error);
+    res.status(500).json({ message: 'Server error while creating admin notification' });
+  }
+});
+
+/**
+ * @route   PATCH /api/admin/notifications/:id/read
+ * @desc    Mark a single admin notification as read
+ * @access  Private (Admin)
+ */
+router.patch('/notifications/:id/read', async (req, res) => {
+  try {
+    const notification = await Notification.findOne({ _id: req.params.id, user: req.user._id });
+    if (!notification) return res.status(404).json({ message: 'Notification not found' });
+
+    await notification.markAsRead();
+    res.json({ message: 'Notification marked as read' });
+  } catch (error) {
+    console.error('Mark admin notification read error:', error);
+    res.status(500).json({ message: 'Server error while updating notification' });
+  }
+});
+
+/**
+ * @route   PATCH /api/admin/notifications/read-all
+ * @desc    Mark all admin notifications as read
+ * @access  Private (Admin)
+ */
+router.patch('/notifications/read-all', async (req, res) => {
+  try {
+    const result = await Notification.markAllAsRead(req.user._id);
+    res.json({ message: 'All notifications marked as read', updatedCount: result.modifiedCount });
+  } catch (error) {
+    console.error('Mark all admin notifications read error:', error);
+    res.status(500).json({ message: 'Server error while updating notifications' });
+  }
+});
+
+/**
+ * @route   PATCH /api/admin/notifications/:id/archive
+ * @desc    Archive admin notification (soft delete)
+ * @access  Private (Admin)
+ */
+router.patch('/notifications/:id/archive', async (req, res) => {
+  try {
+    const notification = await Notification.findOne({ _id: req.params.id, user: req.user._id });
+    if (!notification) return res.status(404).json({ message: 'Notification not found' });
+
+    notification.isActive = false;
+    await notification.save();
+    res.json({ message: 'Notification archived' });
+  } catch (error) {
+    console.error('Archive admin notification error:', error);
+    res.status(500).json({ message: 'Server error while archiving notification' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Moderation (violations/reports/disputes)
+// ---------------------------------------------------------------------------
+
+/**
+ * @route   GET /api/admin/moderation-violations
+ * @desc    List moderation violations logged by the frontend moderation layer
+ * @access  Private (Admin)
+ */
+router.get('/moderation-violations', async (req, res) => {
+  try {
+    const { severity, type, page = 1, limit = 50 } = req.query;
+    const filters = {};
+
+    if (severity && ['high', 'medium', 'low'].includes(severity)) {
+      filters.severity = severity;
+    }
+    if (type && ['blocked', 'warning', 'suspicious'].includes(type)) {
+      filters.violationType = type;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [rows, total] = await Promise.all([
+      ModerationViolation.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('user', 'email firstName lastName role')
+        .populate({
+          path: 'application',
+          select: 'property',
+          populate: { path: 'property', select: 'title' }
+        }),
+      ModerationViolation.countDocuments(filters)
+    ]);
+
+    // Shape it to match the existing frontend component expectations
+    const violations = rows.map(v => ({
+      id: v._id,
+      user_id: v.user?._id || v.user,
+      application_id: v.application?._id || v.application,
+      original_message: v.originalMessage,
+      violation_type: v.violationType,
+      violation_reason: v.violationReason,
+      severity: v.severity,
+      created_at: v.createdAt,
+      user: v.user,
+      application: v.application
+        ? {
+            id: v.application._id,
+            property: v.application.property
+          }
+        : undefined
+    }));
+
+    res.json({
+      violations,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        total,
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get moderation violations error:', error);
+    res.status(500).json({ message: 'Server error while fetching moderation violations' });
+  }
+});
+
+/**
+ * @route   GET /api/admin/reports
+ * @desc    List user reports for admin review
+ * @access  Private (Admin)
+ */
+router.get('/reports', async (req, res) => {
+  try {
+    const { status, contentType, page = 1, limit = 50 } = req.query;
+    const filters = {};
+
+    if (status && ['pending', 'under_review', 'resolved', 'dismissed'].includes(status)) {
+      filters.status = status;
+    }
+    if (contentType && ['property', 'user', 'application', 'message', 'other'].includes(contentType)) {
+      filters.contentType = contentType;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [rows, total] = await Promise.all([
+      Report.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('reporter', 'email firstName lastName role')
+        .populate('reportedUser', 'email firstName lastName role'),
+      Report.countDocuments(filters)
+    ]);
+
+    const reports = rows.map(r => ({
+      id: r._id,
+      reporter_id: r.reporter?._id || r.reporter,
+      reported_user_id: r.reportedUser?._id || r.reportedUser,
+      content_type: r.contentType,
+      content_id: r.contentId,
+      report_reason: r.reportReason,
+      description: r.description,
+      evidence: r.evidence,
+      status: r.status,
+      admin_notes: r.adminNotes,
+      action_taken: r.actionTaken,
+      created_at: r.createdAt,
+      updated_at: r.updatedAt,
+      reporter: r.reporter,
+      reported_user: r.reportedUser
+    }));
+
+    res.json({
+      reports,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        total,
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get reports error:', error);
+    res.status(500).json({ message: 'Server error while fetching reports' });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/reports/:id
+ * @desc    Update a report (status/admin notes/action taken)
+ * @access  Private (Admin)
+ */
+router.put('/reports/:id', async (req, res) => {
+  try {
+    const { status, admin_notes, action_taken } = req.body || {};
+
+    const updates = {};
+    if (status) updates.status = status;
+    if (admin_notes !== undefined) updates.adminNotes = admin_notes;
+    if (action_taken !== undefined) updates.actionTaken = action_taken;
+
+    const report = await Report.findByIdAndUpdate(req.params.id, updates, { new: true })
+      .populate('reporter', 'email firstName lastName role')
+      .populate('reportedUser', 'email firstName lastName role');
+
+    if (!report) {
+      return res.status(404).json({ message: 'Report not found' });
+    }
+
+    res.json({ message: 'Report updated', report });
+  } catch (error) {
+    console.error('Update report error:', error);
+    res.status(500).json({ message: 'Server error while updating report' });
+  }
+});
+
+/**
+ * @route   GET /api/admin/disputes
+ * @desc    List disputes for admin resolution
+ * @access  Private (Admin)
+ */
+router.get('/disputes', async (req, res) => {
+  try {
+    const { status, page = 1, limit = 50 } = req.query;
+    const filters = {};
+
+    if (status && ['open', 'under_review', 'resolved', 'closed'].includes(status)) {
+      filters.status = status;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [rows, total] = await Promise.all([
+      Dispute.find(filters)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate('reporter', 'email firstName lastName role')
+        .populate('reportedUser', 'email firstName lastName role'),
+      Dispute.countDocuments(filters)
+    ]);
+
+    const disputes = rows.map(d => ({
+      id: d._id,
+      reporter_id: d.reporter?._id || d.reporter,
+      reported_user_id: d.reportedUser?._id || d.reportedUser,
+      dispute_type: d.disputeType,
+      title: d.title,
+      description: d.description,
+      evidence: d.evidence,
+      status: d.status,
+      resolution: d.resolution,
+      admin_notes: d.adminNotes,
+      created_at: d.createdAt,
+      updated_at: d.updatedAt,
+      reporter: d.reporter,
+      reported_user: d.reportedUser
+    }));
+
+    res.json({
+      disputes,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / parseInt(limit)),
+        total,
+        limit: parseInt(limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get disputes error:', error);
+    res.status(500).json({ message: 'Server error while fetching disputes' });
+  }
+});
+
+/**
+ * @route   PUT /api/admin/disputes/:id
+ * @desc    Update dispute status/resolution/admin notes
+ * @access  Private (Admin)
+ */
+router.put('/disputes/:id', async (req, res) => {
+  try {
+    const { status, resolution, admin_notes } = req.body || {};
+
+    const updates = {};
+    if (status) updates.status = status;
+    if (resolution !== undefined) updates.resolution = resolution;
+    if (admin_notes !== undefined) updates.adminNotes = admin_notes;
+
+    const dispute = await Dispute.findByIdAndUpdate(req.params.id, updates, { new: true })
+      .populate('reporter', 'email firstName lastName role')
+      .populate('reportedUser', 'email firstName lastName role');
+
+    if (!dispute) {
+      return res.status(404).json({ message: 'Dispute not found' });
+    }
+
+    res.json({ message: 'Dispute updated', dispute });
+  } catch (error) {
+    console.error('Update dispute error:', error);
+    res.status(500).json({ message: 'Server error while updating dispute' });
   }
 });
 
@@ -544,53 +1344,8 @@ router.get('/reports/platform', async (req, res) => {
 router.delete('/users/:id', async (req, res) => {
   try {
     const userId = req.params.id;
-
-    // Find the user
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Prevent deleting admin users (optional safety check)
-    if (user.role === 'admin') {
-      return res.status(403).json({ message: 'Cannot delete admin users' });
-    }
-
-    // Delete all related data
-    await Property.deleteMany({ landlord_id: userId });
-    await Application.deleteMany({ 
-      $or: [
-        { client_id: userId },
-        { landlord_id: userId }
-      ]
-    });
-    await Payment.deleteMany({ 
-      $or: [
-        { client_id: userId },
-        { landlord_id: userId }
-      ]
-    });
-    await MaintenanceRequest.deleteMany({ 
-      $or: [
-        { client_id: userId },
-        { landlord_id: userId }
-      ]
-    });
-    await ViewingAppointment.deleteMany({ 
-      $or: [
-        { client_id: userId },
-        { landlord_id: userId }
-      ]
-    });
-    await Message.deleteMany({ 
-      $or: [
-        { sender_id: userId },
-        { receiver_id: userId }
-      ]
-    });
-
-    // Delete the user
-    await User.findByIdAndDelete(userId);
+    const r = await deleteUserCascade(userId);
+    if (!r.ok) return res.status(r.code).json({ message: r.message });
 
     res.json({
       message: 'User and all related data deleted successfully'

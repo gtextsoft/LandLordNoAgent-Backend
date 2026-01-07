@@ -80,12 +80,31 @@ const paymentSchema = new mongoose.Schema({
     default: false
   },
   
-  // Commission (removed - set to 0)
+  // Commission
   commission_rate: {
     type: Number,
     default: 0
   },
   commission_amount: {
+    type: Number,
+    default: 0
+  },
+  
+  // Landlord account and payout tracking
+  landlordAccount: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'LandlordAccount'
+  },
+  allocatedToPayout: {
+    type: Boolean,
+    default: false
+  },
+  payoutRequest: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PayoutRequest'
+  },
+  payoutAllocatedAt: Date,
+  landlordNetAmount: {
     type: Number,
     default: 0
   },
@@ -111,6 +130,8 @@ paymentSchema.index({ status: 1 });
 paymentSchema.index({ type: 1 });
 paymentSchema.index({ createdAt: -1 });
 paymentSchema.index({ stripePaymentIntentId: 1 });
+paymentSchema.index({ landlordAccount: 1, allocatedToPayout: 1 });
+paymentSchema.index({ commission_rate: 1 });
 
 // Virtual for formatted amount
 paymentSchema.virtual('formattedAmount').get(function() {

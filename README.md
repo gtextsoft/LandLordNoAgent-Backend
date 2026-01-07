@@ -553,7 +553,7 @@ disputes (
 ```sql
 platform_settings (
   id UUID PRIMARY KEY,
-  commission_rate DECIMAL DEFAULT 0.05,
+  commission_rate DECIMAL DEFAULT 0.10,  -- 10% default commission rate
   platform_fee DECIMAL DEFAULT 0,
   currency_settings JSONB,
   email_templates JSONB,

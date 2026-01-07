@@ -516,4 +516,60 @@ router.get("/me", verifyToken, async (req, res) => {
   }
 });
 
+// @route   POST /api/auth/check-email
+// @desc    Check if email already exists in the system
+// @access  Public
+router.post("/check-email", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        message: "Email is required",
+        exists: false
+      });
+    }
+
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    
+    res.json({
+      exists: !!existingUser
+    });
+  } catch (error) {
+    console.error("Check email error:", error);
+    res.status(500).json({
+      message: "Server error while checking email",
+      exists: false
+    });
+  }
+});
+
+// @route   POST /api/auth/security-log
+// @desc    Log security events for audit purposes
+// @access  Private
+router.post("/security-log", verifyToken, async (req, res) => {
+  try {
+    const { event, userId, details, timestamp } = req.body;
+
+    // Log to console for now - in production, this could go to a separate logging service
+    console.log('[SECURITY LOG]', {
+      event,
+      userId: userId || req.user._id,
+      details,
+      timestamp: timestamp || new Date().toISOString(),
+      ip: req.ip,
+      userAgent: req.get('User-Agent')
+    });
+
+    // Optional: Save to database for audit trail
+    // await SecurityLog.create({ event, userId, details, timestamp, ip: req.ip });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Security log error:", error);
+    // Don't fail - security logging should not block user actions
+    res.json({ success: false });
+  }
+});
+
 module.exports = router;

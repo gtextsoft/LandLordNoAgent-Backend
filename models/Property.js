@@ -168,6 +168,10 @@ const propertySchema = new mongoose.Schema({
     enum: ['draft', 'active', 'rented', 'inactive'],
     default: 'draft'
   },
+  featured: {
+    type: Boolean,
+    default: false
+  },
   isVerified: {
     type: Boolean,
     default: false

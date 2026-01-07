@@ -51,7 +51,7 @@ const userSchema = new mongoose.Schema({
     status: {
       type: String,
       enum: ['pending', 'verified', 'rejected'],
-      default: 'pending'
+      default: null  // null means user has not applied for KYC yet
     },
     documents: [{
       type: {
@@ -145,6 +145,12 @@ const userSchema = new mongoose.Schema({
     default: 0
   },
   lockUntil: Date
+  ,
+  // Saved/Favorite properties (client-side feature)
+  savedProperties: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Property'
+  }]
 }, {
   timestamps: true
 });

@@ -97,7 +97,16 @@ app.use('/api', apiLimiter);
 /* ============================
    📦 BODY PARSING
 ============================ */
-app.use(express.json({ limit: '10mb' }));
+// Stripe webhooks require the *raw* request body for signature verification.
+// Because we register JSON parsing globally, we must skip JSON parsing for webhook routes.
+const jsonParser = express.json({ limit: '10mb' });
+app.use((req, res, next) => {
+  const url = req.originalUrl || '';
+  if (url.startsWith('/api/payments/webhook') || url.startsWith('/api/stripe/webhook')) {
+    return next();
+  }
+  return jsonParser(req, res, next);
+});
 app.use(express.urlencoded({ extended: true }));
 
 /* ============================
@@ -143,11 +152,15 @@ app.use('/api/maintenance', require('./routes/maintenance'));
 app.use('/api/appointments', require('./routes/appointments'));
 app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/moderation', require('./routes/moderation'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/email', require('./routes/email'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/stripe', require('./routes/stripe'));
+app.use('/api/landlord-accounts', require('./routes/landlordAccounts'));
+app.use('/api/payouts', require('./routes/payouts'));
+app.use('/api/admin/commission', require('./routes/commission'));
 
 /* ============================
    🩺 HEALTH CHECK

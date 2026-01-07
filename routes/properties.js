@@ -20,6 +20,7 @@ router.get('/', optionalAuth, async (req, res) => {
       bathrooms,
       propertyType,
       rentalType,
+      duration,
       city,
       state,
       zipCode,
@@ -67,6 +68,12 @@ router.get('/', optionalAuth, async (req, res) => {
     if (propertyType) filters.propertyType = propertyType;
     if (rentalType) filters.rentalType = rentalType;
 
+    // Duration filter (long-term): match properties whose minimum lease is <= desired duration.
+    // This keeps short-term listings unaffected.
+    if (duration && !Number.isNaN(parseInt(duration))) {
+      filters['leaseTerms.minLease'] = { $lte: parseInt(duration) };
+    }
+
     // Handle location parameter (can be city, state, or a general location string)
     // Priority: specific city/state > general location parameter
     if (city) {
@@ -89,7 +96,23 @@ router.get('/', optionalAuth, async (req, res) => {
     const featuresParam = req.query.features || req.query.amenities;
     if (featuresParam) {
       const featureArray = featuresParam.split(',');
-      filters.features = { $in: featureArray };
+
+      // Combine with any existing $or (e.g., location search) safely using $and.
+      const existingOr = filters.$or ? { $or: filters.$or } : null;
+      if (filters.$or) delete filters.$or;
+
+      const featureOr = {
+        $or: [
+          { features: { $in: featureArray } },
+          { amenities: { $in: featureArray } }
+        ]
+      };
+
+      if (existingOr) {
+        filters.$and = (filters.$and || []).concat([existingOr, featureOr]);
+      } else {
+        filters.$and = (filters.$and || []).concat([featureOr]);
+      }
     }
 
     // Build sort object - validate sortBy field

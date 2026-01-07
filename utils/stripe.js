@@ -263,7 +263,12 @@ const calculateApplicationFee = (amount, feePercentage = 0.03) => {
 };
 
 // Calculate platform commission
-const calculateCommission = (amount, commissionRate = 0.05) => {
+// NOTE: This function is deprecated. Use commissionService.calculateCommission() instead.
+// This function now requires commissionRate parameter (no default) to ensure rate is explicitly provided.
+const calculateCommission = (amount, commissionRate) => {
+  if (commissionRate === undefined || commissionRate === null) {
+    throw new Error('Commission rate is required. Use commissionService.getCurrentCommissionRate() to get the current rate.');
+  }
   return Math.round(amount * commissionRate * 100) / 100;
 };
 

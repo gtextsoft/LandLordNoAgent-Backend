@@ -1,5 +1,6 @@
 const express = require('express');
 const User = require('../models/User');
+const Property = require('../models/Property');
 const { verifyToken, authorize } = require('../middleware/auth');
 const { notifyKYCStatus } = require('../utils/notifications');
 
@@ -74,8 +75,9 @@ router.post('/upload-kyc', verifyToken, async (req, res) => {
       status: 'pending'
     })));
 
-    // Set KYC status to pending when documents are uploaded
-    if (user.kyc.status === 'pending' || user.kyc.documents.length > 0) {
+    // Set KYC status to pending ONLY when documents are uploaded (user has applied for KYC)
+    // Don't set if already verified or rejected (unless user is resubmitting)
+    if (!user.kyc.status || user.kyc.status === 'rejected') {
       user.kyc.status = 'pending';
     }
 
@@ -150,12 +152,40 @@ router.put('/notifications/read-all', verifyToken, async (req, res) => {
 // @access  Private
 router.get('/saved-properties', verifyToken, async (req, res) => {
   try {
-    // This would typically fetch from a saved properties collection
-    // For now, return empty array
-    res.json({ savedProperties: [] });
+    const user = await User.findById(req.user._id)
+      .populate({
+        path: 'savedProperties',
+        populate: { path: 'landlord', select: 'firstName lastName email phone' }
+      });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({ savedProperties: user.savedProperties || [] });
   } catch (error) {
     console.error('Get saved properties error:', error);
     res.status(500).json({ message: 'Server error while fetching saved properties' });
+  }
+});
+
+// @route   GET /api/users/saved-properties/:propertyId
+// @desc    Check if a specific property is saved by the current user
+// @access  Private
+router.get('/saved-properties/:propertyId', verifyToken, async (req, res) => {
+  try {
+    const { propertyId } = req.params;
+
+    const user = await User.findById(req.user._id).select('savedProperties');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const isSaved = (user.savedProperties || []).some(id => String(id) === String(propertyId));
+    res.json({ isSaved });
+  } catch (error) {
+    console.error('Check saved property error:', error);
+    res.status(500).json({ message: 'Server error while checking saved property' });
   }
 });
 
@@ -170,14 +200,55 @@ router.post('/saved-properties', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'Property ID and action are required' });
     }
 
-    // This would typically update a saved properties collection
-    res.json({ 
-      message: `Property ${action === 'save' ? 'saved' : 'removed'} successfully` 
-    });
+    // Validate property exists (prevents saving invalid IDs)
+    const property = await Property.findById(propertyId).select('_id');
+    if (!property) {
+      return res.status(404).json({ message: 'Property not found' });
+    }
+
+    if (action === 'save') {
+      await User.findByIdAndUpdate(req.user._id, {
+        $addToSet: { savedProperties: propertyId }
+      });
+      return res.json({ success: true, saved: true, message: 'Property saved successfully' });
+    }
+
+    if (action === 'unsave') {
+      await User.findByIdAndUpdate(req.user._id, {
+        $pull: { savedProperties: propertyId }
+      });
+      return res.json({ success: true, saved: false, message: 'Property removed successfully' });
+    }
+
+    return res.status(400).json({ message: "Invalid action. Use 'save' or 'unsave'." });
 
   } catch (error) {
     console.error('Save property error:', error);
     res.status(500).json({ message: 'Server error while saving property' });
+  }
+});
+
+// @route   GET /api/users/by-email
+// @desc    Get user by email (Admin only)
+// @access  Private (Admin)
+router.get('/by-email', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() }).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found', user: null });
+    }
+
+    res.json({ user });
+  } catch (error) {
+    console.error('Get user by email error:', error);
+    res.status(500).json({ message: 'Server error while fetching user' });
   }
 });
 

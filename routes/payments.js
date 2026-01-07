@@ -3,6 +3,11 @@ const Payment = require('../models/Payment');
 const Application = require('../models/Application');
 const Property = require('../models/Property');
 const { verifyToken, authorize } = require('../middleware/auth');
+const {
+  handleCheckoutSessionCompleted,
+  handlePaymentIntentSucceeded,
+  handlePaymentIntentFailed
+} = require('../services/stripeWebhookHandlers');
 
 const router = express.Router();
 const Stripe = require('stripe'); 
@@ -21,10 +26,12 @@ try {
 
 // Calculate escrow interest (charged if property not visited within 10 days)
 const calculateEscrowInterest = (amount, daysHeld) => {
-  if (daysHeld <= 10) return 0;
+  if (daysHeld <= 10 || amount <= 0) return 0;
   // 2% interest per day after 10 days
   const daysOver = daysHeld - 10;
-  return Math.round(amount * 0.02 * daysOver * 100) / 100;
+  const interest = amount * 0.02 * daysOver;
+  // Round to 2 decimal places and ensure non-negative
+  return Math.max(0, Math.round(interest * 100) / 100);
 };
 
 // @route   POST /api/payments/create-checkout
@@ -42,9 +49,47 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
 
     const { applicationId, amount, currency = 'ngn' } = req.body;
 
-    if (!applicationId || !amount) {
+    // Validate required fields
+    if (!applicationId) {
       return res.status(400).json({ 
-        message: 'Application ID and amount are required' 
+        message: 'Application ID is required',
+        error: 'MISSING_APPLICATION_ID'
+      });
+    }
+
+    if (!amount) {
+      return res.status(400).json({ 
+        message: 'Payment amount is required',
+        error: 'MISSING_AMOUNT'
+      });
+    }
+
+    // Validate amount is a valid number
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      return res.status(400).json({ 
+        message: 'Payment amount must be a valid number greater than zero',
+        error: 'INVALID_AMOUNT'
+      });
+    }
+
+    // Minimum amount validation (e.g., 100 NGN or equivalent)
+    const MIN_AMOUNT = 100;
+    if (amountNum < MIN_AMOUNT) {
+      return res.status(400).json({ 
+        message: `Payment amount must be at least ${MIN_AMOUNT} ${currency.toUpperCase()}`,
+        error: 'AMOUNT_TOO_LOW',
+        minimumAmount: MIN_AMOUNT
+      });
+    }
+
+    // Validate currency
+    const validCurrencies = ['ngn', 'usd', 'gbp', 'eur'];
+    if (!validCurrencies.includes(currency.toLowerCase())) {
+      return res.status(400).json({ 
+        message: `Invalid currency. Supported currencies: ${validCurrencies.join(', ').toUpperCase()}`,
+        error: 'INVALID_CURRENCY',
+        supportedCurrencies: validCurrencies
       });
     }
 
@@ -54,11 +99,43 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
       .populate('client', 'firstName lastName email');
 
     if (!application) {
-      return res.status(404).json({ message: 'Application not found' });
+      return res.status(404).json({ 
+        message: 'Application not found',
+        error: 'APPLICATION_NOT_FOUND'
+      });
     }
 
+    // Check if application belongs to the authenticated user
     if (application.client._id.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Not authorized to make payment for this application' });
+      return res.status(403).json({ 
+        message: 'Not authorized to make payment for this application',
+        error: 'UNAUTHORIZED_APPLICATION'
+      });
+    }
+
+    // Check if application is in a valid state for payment
+    const validStatusesForPayment = ['approved', 'accepted', 'pending'];
+    if (!validStatusesForPayment.includes(application.status)) {
+      return res.status(400).json({ 
+        message: `Cannot make payment for application with status: ${application.status}. Application must be approved or accepted.`,
+        error: 'INVALID_APPLICATION_STATUS',
+        currentStatus: application.status
+      });
+    }
+
+    // Check if property exists and is available
+    if (!application.property) {
+      return res.status(400).json({ 
+        message: 'Property information not found for this application',
+        error: 'PROPERTY_NOT_FOUND'
+      });
+    }
+
+    if (application.property.isAvailable === false) {
+      return res.status(400).json({ 
+        message: 'This property is no longer available for payment',
+        error: 'PROPERTY_UNAVAILABLE'
+      });
     }
 
     // Determine payment type - rent payments for approved applications are escrow
@@ -123,19 +200,69 @@ router.post('/create-checkout', verifyToken, async (req, res) => {
   } catch (error) {
     console.error('Create checkout session error:', error);
     
-    // Provide more detailed error information
+    // Categorize and provide detailed error information
+    let statusCode = 500;
     let errorMessage = 'Server error while creating checkout session';
-    if (error.type === 'StripeAuthenticationError') {
-      errorMessage = 'Stripe authentication failed. Please check your Stripe API key configuration.';
-    } else if (error.type === 'StripeInvalidRequestError') {
-      errorMessage = `Invalid payment request: ${error.message || 'Please check your payment details'}`;
+    let errorCode = 'UNKNOWN_ERROR';
+    
+    // Stripe-specific errors
+    if (error.type) {
+      switch (error.type) {
+        case 'StripeAuthenticationError':
+          errorMessage = 'Payment service authentication failed. Please contact support.';
+          errorCode = 'STRIPE_AUTH_ERROR';
+          statusCode = 503; // Service unavailable
+          break;
+        case 'StripeInvalidRequestError':
+          errorMessage = `Invalid payment request: ${error.message || 'Please check your payment details'}`;
+          errorCode = 'STRIPE_INVALID_REQUEST';
+          statusCode = 400;
+          break;
+        case 'StripeAPIError':
+          errorMessage = 'Payment service error. Please try again later or contact support.';
+          errorCode = 'STRIPE_API_ERROR';
+          statusCode = 503;
+          break;
+        case 'StripeConnectionError':
+          errorMessage = 'Unable to connect to payment service. Please try again.';
+          errorCode = 'STRIPE_CONNECTION_ERROR';
+          statusCode = 503;
+          break;
+        case 'StripeRateLimitError':
+          errorMessage = 'Too many requests. Please wait a moment and try again.';
+          errorCode = 'STRIPE_RATE_LIMIT';
+          statusCode = 429;
+          break;
+        default:
+          errorMessage = error.message || errorMessage;
+          errorCode = `STRIPE_${error.type}`;
+      }
     } else if (error.message) {
-      errorMessage = error.message;
+      // Database or other errors
+      if (error.message.includes('Cast to ObjectId failed')) {
+        errorMessage = 'Invalid application ID format';
+        errorCode = 'INVALID_ID_FORMAT';
+        statusCode = 400;
+      } else if (error.message.includes('network') || error.message.includes('ECONNREFUSED')) {
+        errorMessage = 'Database connection error. Please try again later.';
+        errorCode = 'DATABASE_ERROR';
+        statusCode = 503;
+      } else {
+        errorMessage = error.message;
+      }
     }
     
-    res.status(500).json({ 
+    // Log full error details for debugging (server-side only)
+    console.error('Payment error details:', {
+      type: error.type,
+      code: errorCode,
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+    
+    res.status(statusCode).json({ 
       message: errorMessage,
-      error: error.type || 'Unknown error',
+      error: errorCode,
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -188,99 +315,6 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
   }
 });
 
-// Handle successful checkout session
-const handleCheckoutSessionCompleted = async (session) => {
-  try {
-    const { applicationId, userId, type } = session.metadata;
-
-    if (!applicationId) {
-      console.error('No applicationId in session metadata');
-      return;
-    }
-
-    // Get application to check if it's rent payment
-    const application = await Application.findById(applicationId)
-      .populate('property', 'rentalType');
-    
-    if (!application) {
-      console.error('Application not found:', applicationId);
-      return;
-    }
-
-    // Determine if this should be escrow (rent payments for approved applications are escrow)
-    const isRentPayment = (type === 'rent' || application.status === 'approved' || application.status === 'accepted');
-    const escrowExpiresAt = new Date();
-    escrowExpiresAt.setDate(escrowExpiresAt.getDate() + 10); // 10 days from now
-
-    // Update application payment status
-    if (type === 'application_fee') {
-      await Application.findByIdAndUpdate(applicationId, {
-        'applicationFee.paid': true,
-        'applicationFee.paymentId': session.payment_intent,
-        'applicationFee.paidAt': new Date()
-      });
-    }
-
-    // Create payment record with escrow
-    const payment = new Payment({
-      application: applicationId,
-      user: userId,
-      amount: session.amount_total / 100, // Convert from cents
-      currency: session.currency,
-      stripePaymentIntentId: session.payment_intent,
-      stripeSessionId: session.id,
-      status: 'completed',
-      type: isRentPayment ? 'rent' : (type || 'application_fee'),
-      isEscrow: isRentPayment, // Rent payments are held in escrow
-      escrowStatus: isRentPayment ? 'held' : null,
-      escrowHeldAt: isRentPayment ? new Date() : null,
-      escrowExpiresAt: isRentPayment ? escrowExpiresAt : null,
-      commission_rate: 0.05, // 5% commission (calculated when escrow is released)
-      commission_amount: 0 // Commission calculated when escrow is released
-    });
-
-    await payment.save();
-    console.log(`✅ Payment created: ${payment._id}, Escrow: ${isRentPayment ? 'Yes' : 'No'}`);
-
-    // Mark property as unavailable when payment is completed
-    if (isRentPayment && application.property) {
-      await Property.findByIdAndUpdate(application.property._id || application.property, {
-        isAvailable: false
-      });
-      console.log(`✅ Property ${application.property._id || application.property} marked as unavailable after payment`);
-    }
-
-  } catch (error) {
-    console.error('Handle checkout session completed error:', error);
-  }
-};
-
-// Handle successful payment intent
-const handlePaymentIntentSucceeded = async (paymentIntent) => {
-  try {
-    // Update payment status
-    await Payment.findOneAndUpdate(
-      { stripePaymentIntentId: paymentIntent.id },
-      { status: 'completed' }
-    );
-  } catch (error) {
-    console.error('Handle payment intent succeeded error:', error);
-  }
-};
-
-// Handle failed payment intent
-const handlePaymentIntentFailed = async (paymentIntent) => {
-  try {
-    // Update payment status
-    await Payment.findOneAndUpdate(
-      { stripePaymentIntentId: paymentIntent.id },
-      { status: 'failed', failureReason: paymentIntent.last_payment_error?.message }
-    );
-  } catch (error) {
-    console.error('Handle payment intent failed error:', error);
-  }
-};
-
 // @route   GET /api/payments/confirm/:sessionId
 // @desc    Confirm payment session (called after Stripe redirect)
 // @access  Private
@@ -319,67 +353,12 @@ router.get('/confirm/:sessionId', verifyToken, async (req, res) => {
     let payment = await Payment.findOne({ stripeSessionId: sessionId });
 
     if (!payment) {
-      // If payment doesn't exist, trigger the webhook handler logic
-      // This handles cases where webhook hasn't fired yet
-      const { applicationId, userId, type } = session.metadata || {};
-
-      if (applicationId) {
-        // Get application
-        const application = await Application.findById(applicationId)
-          .populate('property', 'rentalType landlord')
-          .populate('client', 'firstName lastName email')
-          .populate('landlord', 'firstName lastName email');
-
-        if (!application) {
-          return res.status(404).json({ message: 'Application not found' });
-        }
-
-        // Determine if this should be escrow
-        const isRentPayment = (type === 'rent' || application.status === 'approved' || application.status === 'accepted');
-        const escrowExpiresAt = new Date();
-        escrowExpiresAt.setDate(escrowExpiresAt.getDate() + 10); // 10 days from now
-
-        // Create payment record with escrow
-        payment = new Payment({
-          application: applicationId,
-          user: userId || application.client._id,
-          amount: session.amount_total / 100, // Convert from cents
-          currency: session.currency,
-          stripePaymentIntentId: session.payment_intent,
-          stripeSessionId: session.id,
-          status: 'completed',
-          type: isRentPayment ? 'rent' : (type || 'application_fee'),
-          isEscrow: isRentPayment,
-          escrowStatus: isRentPayment ? 'held' : null,
-          escrowHeldAt: isRentPayment ? new Date() : null,
-          escrowExpiresAt: isRentPayment ? escrowExpiresAt : null,
-          commission_rate: 0,
-          commission_amount: 0
-        });
-
-        await payment.save();
-
-        // Update application payment status
-        if (type === 'application_fee') {
-          await Application.findByIdAndUpdate(applicationId, {
-            'applicationFee.paid': true,
-            'applicationFee.paymentId': session.payment_intent,
-            'applicationFee.paidAt': new Date()
-          });
-        }
-
-        // Mark property as unavailable when payment is completed
-        if (isRentPayment && application.property) {
-          await Property.findByIdAndUpdate(application.property._id || application.property, {
-            isAvailable: false
-          });
-          console.log(`✅ Property ${application.property._id || application.property} marked as unavailable after payment`);
-        }
-
-        console.log(`✅ Payment confirmed and created: ${payment._id}, Escrow: ${isRentPayment ? 'Yes' : 'No'}`);
-      } else {
+      // If webhook hasn't fired yet, process the session locally using the same idempotent handler.
+      const created = await handleCheckoutSessionCompleted(session);
+      if (!created) {
         return res.status(400).json({ message: 'Application ID not found in session metadata' });
       }
+      payment = created;
     }
 
     // Return payment confirmation
@@ -783,6 +762,10 @@ router.get('/admin/all', verifyToken, authorize('admin'), async (req, res) => {
 // @access  Private (Admin)
 router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, res) => {
   try {
+    const commissionService = require('../services/commissionService');
+    const landlordAccountService = require('../services/landlordAccountService');
+    const AuditLog = require('../models/AuditLog');
+    
     const payment = await Payment.findById(req.params.id)
       .populate('application', 'property client landlord');
 
@@ -790,42 +773,171 @@ router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, r
       return res.status(404).json({ message: 'Payment not found' });
     }
 
-    if (!payment.isEscrow || payment.escrowStatus !== 'held') {
-      return res.status(400).json({ message: 'Payment is not held in escrow' });
+    if (!payment.isEscrow) {
+      return res.status(400).json({ message: 'Payment is not an escrow payment' });
+    }
+
+    if (payment.escrowStatus !== 'held') {
+      if (payment.escrowStatus === 'released') {
+        // Already released - return the existing payment data
+        return res.status(200).json({
+          message: 'Escrow already released',
+          payment: {
+            ...payment.toObject(),
+            grossAmount: payment.amount,
+            commissionRate: payment.commission_rate,
+            commissionAmount: payment.commission_amount,
+            landlordNetAmount: payment.landlordNetAmount
+          }
+        });
+      }
+      return res.status(400).json({ 
+        message: `Payment escrow status is '${payment.escrowStatus}', cannot release` 
+      });
+    }
+
+    // Validate escrow was actually held (escrowHeldAt should exist)
+    if (!payment.escrowHeldAt) {
+      console.error(`Payment ${payment._id} marked as escrow but escrowHeldAt is missing`);
+      // Set it to now as fallback, but log the issue
+      payment.escrowHeldAt = new Date();
     }
 
     // Calculate interest if property not visited within 10 days
-    const daysHeld = Math.floor((new Date() - payment.escrowHeldAt) / (1000 * 60 * 60 * 24));
+    const daysHeld = Math.max(0, Math.floor((new Date() - payment.escrowHeldAt) / (1000 * 60 * 60 * 24)));
     const interest = calculateEscrowInterest(payment.amount, daysHeld);
     payment.escrowInterest = interest;
     
-    // Calculate 5% commission when escrow is released
-    // Commission is calculated on the original amount (before interest deduction)
-    const COMMISSION_RATE = 0.05; // 5%
-    payment.commission_rate = COMMISSION_RATE;
-    const originalAmount = payment.amount; // Store original amount before interest deduction
-    payment.commission_amount = Math.round(originalAmount * COMMISSION_RATE * 100) / 100; // Round to 2 decimal places
+    // Get current commission rate from PlatformSettings
+    const commissionRate = await commissionService.getCurrentCommissionRate();
     
-    // Update payment
+    // Store original gross amount (before any deductions)
+    const grossAmount = payment.amount;
+    
+    // Validate amounts before calculation
+    if (grossAmount <= 0) {
+      return res.status(400).json({ message: 'Invalid payment amount' });
+    }
+    if (commissionRate < 0 || commissionRate > 1) {
+      return res.status(500).json({ message: 'Invalid commission rate configuration' });
+    }
+
+    // Calculate commission using the service
+    const commissionAmount = commissionService.calculateCommission(grossAmount, commissionRate);
+    
+    // Calculate net landlord amount (after commission and interest)
+    const landlordNetAmount = commissionService.calculateNetAmount(grossAmount, commissionRate, interest);
+    
+    // Validate calculations
+    if (commissionAmount < 0 || landlordNetAmount < 0) {
+      console.error(`Invalid commission calculation for payment ${payment._id}:`, {
+        grossAmount,
+        commissionRate,
+        commissionAmount,
+        interest,
+        landlordNetAmount
+      });
+      return res.status(500).json({ message: 'Commission calculation error' });
+    }
+    
+    // Store commission details in payment
+    payment.commission_rate = commissionRate;
+    payment.commission_amount = commissionAmount;
+    payment.landlordNetAmount = landlordNetAmount;
+    
+    // Update payment status
     payment.escrowStatus = 'released';
     payment.escrowReleasedAt = new Date();
     
-    // If interest is charged, reduce the amount to landlord
-    if (interest > 0) {
-      payment.amount = payment.amount - interest;
+    // Get landlord ID from application
+    const landlordId = payment.application.landlord._id || payment.application.landlord;
+    
+    if (!landlordId) {
+      return res.status(400).json({ message: 'Landlord information not found in application' });
     }
 
+    // Verify landlord exists and is actually a landlord
+    const User = require('../models/User');
+    const landlord = await User.findById(landlordId);
+    if (!landlord) {
+      return res.status(404).json({ message: 'Landlord not found' });
+    }
+    if (landlord.role !== 'landlord') {
+      return res.status(400).json({ message: 'User is not a landlord' });
+    }
+    
+    // Get or create landlord account
+    const landlordAccount = await landlordAccountService.createOrGetAccount(landlordId);
+    
+    // Link payment to landlord account
+    payment.landlordAccount = landlordAccount._id;
+    
+    // Update landlord account balances
+    await landlordAccountService.updateBalance(
+      landlordId,
+      grossAmount,
+      commissionAmount,
+      landlordNetAmount,
+      'available'
+    );
+    
+    // Log commission calculation in AuditLog
+    await AuditLog.logCommissionCalculation(
+      req.user._id,
+      payment._id,
+      grossAmount,
+      commissionRate,
+      commissionAmount,
+      landlordNetAmount,
+      landlordId,
+      req.ip,
+      req.get('user-agent')
+    );
+    
     await payment.save();
     
-    console.log(`✅ Escrow released: Payment ${payment._id}, Commission: ${payment.commission_amount} (5% of ${originalAmount})`);
+    console.log(`✅ Escrow released: Payment ${payment._id}, Gross: ₦${grossAmount}, Commission: ₦${commissionAmount} (${(commissionRate * 100)}%), Net: ₦${landlordNetAmount}`);
 
-    // TODO: Transfer funds to landlord via Stripe
-    // For now, just mark as released
+    // Send escrow released email notification to landlord
+    try {
+      const { sendEmail, getEmailTemplate } = require('../utils/emailNotifications');
+      const landlordEmail = payment.application.landlord?.email;
+      
+      if (landlordEmail) {
+        // Reload payment with populated data for email
+        const paymentWithDetails = await Payment.findById(payment._id)
+          .populate('application', 'property landlord');
+        
+        const template = getEmailTemplate('escrowReleased', {
+          landlordName: payment.application.landlord?.firstName || 'Landlord',
+          propertyTitle: payment.application.property?.title || 'Property',
+          grossAmount: grossAmount,
+          commissionRate: commissionRate,
+          commissionAmount: commissionAmount,
+          landlordNetAmount: landlordNetAmount,
+          interestCharged: interest,
+          currency: payment.currency || 'NGN',
+          paymentId: payment._id.toString()
+        });
+        
+        if (template) {
+          await sendEmail(landlordEmail, template.subject, template.html, template.text);
+          console.log(`Escrow released email sent to ${landlordEmail} for payment ${payment._id}`);
+        }
+      }
+    } catch (emailError) {
+      // Don't fail the release if email fails
+      console.error('Error sending escrow released email:', emailError);
+    }
 
     res.json({
       message: 'Escrow released successfully',
       payment: {
         ...payment.toObject(),
+        grossAmount,
+        commissionRate,
+        commissionAmount,
+        landlordNetAmount,
         interestCharged: interest,
         daysHeld: daysHeld
       }
@@ -833,7 +945,7 @@ router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, r
 
   } catch (error) {
     console.error('Release escrow error:', error);
-    res.status(500).json({ message: 'Server error while releasing escrow' });
+    res.status(500).json({ message: 'Server error while releasing escrow', error: error.message });
   }
 });
 
