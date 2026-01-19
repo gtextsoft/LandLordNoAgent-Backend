@@ -77,11 +77,31 @@ router.post('/upload-kyc', verifyToken, async (req, res) => {
 
     // Set KYC status to pending ONLY when documents are uploaded (user has applied for KYC)
     // Don't set if already verified or rejected (unless user is resubmitting)
-    if (!user.kyc.status || user.kyc.status === 'rejected') {
+    const isNewKycSubmission = !user.kyc.status || user.kyc.status === 'rejected';
+    if (isNewKycSubmission) {
       user.kyc.status = 'pending';
     }
 
     await user.save();
+
+    // Notify admins about new KYC submission
+    if (isNewKycSubmission) {
+      try {
+        const { notifyAdmins } = require('../utils/notifications');
+        const userName = user.firstName 
+          ? `${user.firstName} ${user.lastName || ''}`.trim()
+          : user.email;
+        await notifyAdmins(
+          'New KYC Verification Request',
+          `${userName} has submitted KYC documents for verification.`,
+          'high',
+          '/admin/dashboard?tab=kyc',
+          { userId: user._id.toString(), type: 'kyc_submission' }
+        );
+      } catch (notifError) {
+        console.error('Error notifying admins about KYC:', notifError);
+      }
+    }
 
     res.json({
       message: 'KYC documents uploaded successfully',

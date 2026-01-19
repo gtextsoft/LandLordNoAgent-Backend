@@ -18,6 +18,9 @@ const { sendEmailNotification } = require('./emailNotifications');
  * @param {Object} [data.relatedEntity] - Related entity (type and id)
  * @param {string} [data.actionUrl] - URL for action button
  * @param {Object} [data.metadata] - Additional metadata
+ * @param {boolean} [data.sendEmail=false] - Whether to send email notification
+ * @param {string} [data.emailTemplate] - Email template name to use
+ * @param {Object} [data.emailData] - Data to pass to email template
  * @returns {Promise<Notification>}
  */
 const createNotification = async (data) => {
@@ -33,6 +36,20 @@ const createNotification = async (data) => {
       metadata: data.metadata,
       expiresAt: data.expiresAt
     });
+    
+    // Send email notification if requested
+    if (data.sendEmail && data.emailTemplate) {
+      try {
+        await sendEmailNotification(data.emailTemplate, {
+          userId: data.userId,
+          ...data.emailData
+        });
+        console.log(`✅ Email notification sent for ${data.type} to user ${data.userId}`);
+      } catch (emailError) {
+        console.error('Error sending email notification:', emailError);
+        // Don't throw - email failures should not break notification creation
+      }
+    }
     
     return notification;
   } catch (error) {
@@ -340,6 +357,38 @@ const notifyKYCStatus = async (user, isApproved) => {
   });
 };
 
+/**
+ * Notify all admins about an event
+ */
+const notifyAdmins = async (title, message, priority = 'medium', actionUrl = null, metadata = {}) => {
+  try {
+    const User = require('../models/User');
+    const admins = await User.find({ role: 'admin' }).select('_id');
+    
+    const notifications = await Promise.all(
+      admins.map(admin => 
+        createNotification({
+          userId: admin._id,
+          type: 'system_announcement',
+          title,
+          message,
+          priority,
+          actionUrl,
+          metadata: {
+            ...metadata,
+            actionRequired: priority === 'high' || priority === 'urgent'
+          }
+        })
+      )
+    );
+    
+    return notifications.filter(n => n !== null);
+  } catch (error) {
+    console.error('Error notifying admins:', error);
+    return [];
+  }
+};
+
 module.exports = {
   createNotification,
   notifyApplicationStatusChange,
@@ -348,6 +397,7 @@ module.exports = {
   notifyViewingAppointment,
   notifyMaintenanceRequest,
   notifyPropertyVerification,
-  notifyKYCStatus
+  notifyKYCStatus,
+  notifyAdmins
 };
 

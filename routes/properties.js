@@ -336,6 +336,23 @@ router.post('/', verifyToken, authorize('landlord'), async (req, res) => {
 
     await property.populate('landlord', 'firstName lastName email phone');
 
+    // Notify admins about new property
+    try {
+      const { notifyAdmins } = require('../utils/notifications');
+      const landlordName = property.landlord?.firstName 
+        ? `${property.landlord.firstName} ${property.landlord.lastName || ''}`.trim()
+        : property.landlord?.email || 'A landlord';
+      await notifyAdmins(
+        'New Property Submitted',
+        `${landlordName} has submitted a new property "${property.title}" for verification.`,
+        'medium',
+        '/admin/dashboard?tab=properties',
+        { propertyId: property._id.toString(), type: 'property_submission' }
+      );
+    } catch (notifError) {
+      console.error('Error notifying admins about property:', notifError);
+    }
+
     res.status(201).json({
       message: 'Property created successfully',
       property
