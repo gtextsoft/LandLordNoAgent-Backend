@@ -69,8 +69,8 @@ async function handleCheckoutSessionCompleted(session) {
     // Load application (needed to determine escrow and to infer userId if metadata is missing).
     const application = await Application.findById(applicationId)
       .populate('property', 'title rentalType')
-      .populate('client', '_id email')
-      .populate('landlord', '_id');
+      .populate('client', '_id email firstName lastName')
+      .populate('landlord', '_id email firstName lastName');
 
     if (!application) {
       console.error('handleCheckoutSessionCompleted: application not found', { applicationId, sessionId });
@@ -89,6 +89,11 @@ async function handleCheckoutSessionCompleted(session) {
       application.status === 'accepted';
 
     const escrowExpiresAt = addDays(new Date(), ESCROW_HOLD_DAYS);
+    
+    // Generate payment description
+    const paymentDescription = isRentPayment
+      ? `Rent payment for property: ${application.property?.title || 'Property'}. Payment will be held in escrow until property visit and document handover.`
+      : `Application fee for property: ${application.property?.title || 'Property'}`;
 
     const paymentDoc = {
       application: applicationId,
@@ -97,8 +102,10 @@ async function handleCheckoutSessionCompleted(session) {
       currency: normalizeCurrency(session.currency),
       stripePaymentIntentId: paymentIntentId,
       stripeSessionId: sessionId,
+      stripeChargeId: session.payment_intent ? null : null, // Will be populated from payment intent if available
       status: 'completed',
       type: isRentPayment ? 'rent' : (type || 'application_fee'),
+      description: paymentDescription,
       isEscrow: isRentPayment,
       escrowStatus: isRentPayment ? 'held' : null,
       escrowHeldAt: isRentPayment ? new Date() : null,
@@ -155,6 +162,121 @@ async function handleCheckoutSessionCompleted(session) {
     } catch (emailError) {
       // Don't fail the payment if email fails
       console.error('Error sending payment success email:', emailError);
+    }
+
+    // Send email and in-app notification to landlord
+    try {
+      const landlordId = application.landlord?._id || application.landlord;
+      const landlordEmail = application.landlord?.email;
+      const landlordName = application.landlord?.firstName 
+        ? `${application.landlord.firstName} ${application.landlord.lastName || ''}`.trim()
+        : 'Landlord';
+      const clientName = application.client?.firstName 
+        ? `${application.client.firstName} ${application.client.lastName || ''}`.trim()
+        : 'Client';
+
+      if (landlordId) {
+        const { createNotification } = require('../utils/notifications');
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+        // Create in-app notification for landlord
+        await createNotification({
+          userId: landlordId,
+          type: 'payment_received',
+          title: 'Payment Received',
+          message: `${clientName} has made a payment of ${payment.currency || 'NGN'} ${payment.amount.toLocaleString()} for ${application.property?.title || 'your property'}.${payment.isEscrow ? ' Payment is held in escrow until property visit.' : ''}`,
+          priority: 'high',
+          relatedEntity: {
+            type: 'payment',
+            id: payment._id
+          },
+          actionUrl: `${frontendUrl}/dashboard/landlord/payments`,
+          sendEmail: true,
+          emailTemplate: 'paymentReceivedLandlord',
+          emailData: {
+            landlordName,
+            clientName,
+            propertyTitle: application.property?.title || 'Property',
+            amount: payment.amount,
+            currency: payment.currency,
+            paymentType: payment.type,
+            isEscrow: payment.isEscrow,
+            escrowExpiresAt: payment.escrowExpiresAt,
+            paymentId: payment._id.toString()
+          }
+        });
+
+        console.log(`Payment notification sent to landlord ${landlordId} for payment ${payment._id}`);
+      }
+    } catch (landlordNotifyError) {
+      // Don't fail the payment if notification fails
+      console.error('Error sending landlord payment notification:', landlordNotifyError);
+    }
+
+    // Send email and in-app notification to all admins
+    try {
+      const { notifyAdmins } = require('../utils/notifications');
+      const clientName = application.client?.firstName 
+        ? `${application.client.firstName} ${application.client.lastName || ''}`.trim()
+        : 'Client';
+      const landlordName = application.landlord?.firstName 
+        ? `${application.landlord.firstName} ${application.landlord.lastName || ''}`.trim()
+        : 'Landlord';
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+      // Create in-app notifications for all admins
+      await notifyAdmins(
+        'New Payment Received',
+        `${clientName} has made a payment of ${payment.currency || 'NGN'} ${payment.amount.toLocaleString()} for property "${application.property?.title || 'N/A'}" (Landlord: ${landlordName}).${payment.isEscrow ? ' Payment is held in escrow.' : ''}`,
+        'high',
+        `${frontendUrl}/dashboard/admin/transactions`,
+        {
+          paymentId: payment._id.toString(),
+          applicationId: applicationId.toString(),
+          amount: payment.amount,
+          currency: payment.currency
+        }
+      );
+
+      // Send email notifications to all admins
+      const User = require('../models/User');
+      const admins = await User.find({ role: 'admin' }).select('_id email firstName lastName');
+      
+      for (const admin of admins) {
+        try {
+          const adminEmail = admin.email;
+          const adminName = admin.firstName 
+            ? `${admin.firstName} ${admin.lastName || ''}`.trim()
+            : 'Admin';
+
+          if (adminEmail) {
+            const template = getEmailTemplate('paymentReceivedAdmin', {
+              adminName,
+              clientName,
+              landlordName,
+              propertyTitle: application.property?.title || 'Property',
+              amount: payment.amount,
+              currency: payment.currency,
+              paymentType: payment.type,
+              isEscrow: payment.isEscrow,
+              escrowExpiresAt: payment.escrowExpiresAt,
+              paymentId: payment._id.toString(),
+              applicationId: applicationId.toString()
+            });
+            
+            if (template) {
+              await sendEmail(adminEmail, template.subject, template.html, template.text);
+              console.log(`Payment notification email sent to admin ${adminEmail} for payment ${payment._id}`);
+            }
+          }
+        } catch (adminEmailError) {
+          console.error(`Error sending email to admin ${admin._id}:`, adminEmailError);
+          // Continue with other admins
+        }
+      }
+    } catch (adminNotifyError) {
+      // Don't fail the payment if admin notification fails
+      console.error('Error sending admin payment notification:', adminNotifyError);
     }
 
     // Audit log: Payment created/completed

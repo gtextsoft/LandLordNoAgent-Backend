@@ -507,6 +507,69 @@ const getEmailTemplate = (type, data) => {
         html: wrapEmailTemplate(content, 'Escrow Released'),
         text: `Hi ${data.landlordName || 'Landlord'},\n\nGreat news! The escrow payment for your property has been released to your account.\n\nProperty: ${data.propertyTitle || 'N/A'}\nGross Amount: ${data.currency || 'NGN'} ${data.grossAmount ? parseFloat(data.grossAmount).toLocaleString() : '0'}\nCommission (${((data.commissionRate || 0) * 100).toFixed(1)}%): ${data.currency || 'NGN'} ${data.commissionAmount ? parseFloat(data.commissionAmount).toLocaleString() : '0'}\n${data.interestCharged ? `Interest Charged: ${data.currency || 'NGN'} ${parseFloat(data.interestCharged).toLocaleString()}\n` : ''}Net Amount: ${data.currency || 'NGN'} ${data.landlordNetAmount ? parseFloat(data.landlordNetAmount).toLocaleString() : '0'}\n\nView earnings: ${frontendUrl}/dashboard/landlord/earnings`
       };
+    },
+
+    paymentReceivedLandlord: (data) => {
+      const content = `
+        <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">Payment Received!</h2>
+        <p style="color: #6b7280; line-height: 1.6; margin-bottom: 15px;">
+          Hi ${data.landlordName || 'Landlord'},
+        </p>
+        <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
+          Great news! ${data.clientName || 'A client'} has made a payment for your property.
+        </p>
+        <div style="background-color: #f0fdf4; border-left: 4px solid #249479; padding: 20px; margin: 20px 0; border-radius: 6px;">
+          <p style="color: #166534; margin: 5px 0; font-weight: 600;">Payment Details:</p>
+          <p style="color: #166534; margin: 5px 0;"><strong>Property:</strong> ${data.propertyTitle || 'N/A'}</p>
+          <p style="color: #166534; margin: 5px 0;"><strong>Client:</strong> ${data.clientName || 'N/A'}</p>
+          <p style="color: #166534; margin: 5px 0;"><strong>Amount:</strong> ${data.currency || 'NGN'} ${data.amount ? parseFloat(data.amount).toLocaleString() : '0'}</p>
+          <p style="color: #166534; margin: 5px 0;"><strong>Payment Type:</strong> ${data.paymentType === 'rent' ? 'Rent Payment' : 'Application Fee'}</p>
+          ${data.isEscrow ? `<p style="color: #166534; margin: 5px 0;"><strong>Escrow Status:</strong> Payment held in escrow until property visit and document handover</p>` : ''}
+          ${data.escrowExpiresAt ? `<p style="color: #166534; margin: 5px 0;"><strong>Escrow Expires:</strong> ${new Date(data.escrowExpiresAt).toLocaleDateString()}</p>` : ''}
+          <p style="color: #166534; margin: 5px 0;"><strong>Payment ID:</strong> ${data.paymentId?.substring(0, 8) || 'N/A'}</p>
+        </div>
+        ${data.isEscrow ? '<p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">The payment is being held in escrow. Once the client visits the property and receives the documents, the payment will be released to your account (minus platform commission).</p>' : ''}
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${frontendUrl}/dashboard/landlord/payments" style="display: inline-block; background-color: #249479; color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: bold; font-size: 16px;">View Payment Details</a>
+        </div>
+      `;
+      return {
+        subject: `Payment Received - ${data.propertyTitle || 'Property'}`,
+        html: wrapEmailTemplate(content, 'Payment Received'),
+        text: `Hi ${data.landlordName || 'Landlord'},\n\nGreat news! ${data.clientName || 'A client'} has made a payment for your property.\n\nProperty: ${data.propertyTitle || 'N/A'}\nClient: ${data.clientName || 'N/A'}\nAmount: ${data.currency || 'NGN'} ${data.amount ? parseFloat(data.amount).toLocaleString() : '0'}\nPayment Type: ${data.paymentType === 'rent' ? 'Rent Payment' : 'Application Fee'}\n${data.isEscrow ? 'Escrow Status: Payment held in escrow\n' : ''}${data.escrowExpiresAt ? `Escrow Expires: ${new Date(data.escrowExpiresAt).toLocaleDateString()}\n` : ''}Payment ID: ${data.paymentId?.substring(0, 8) || 'N/A'}\n\nView payment details: ${frontendUrl}/dashboard/landlord/payments`
+      };
+    },
+
+    paymentReceivedAdmin: (data) => {
+      const content = `
+        <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">New Payment Received</h2>
+        <p style="color: #6b7280; line-height: 1.6; margin-bottom: 15px;">
+          Hi ${data.adminName || 'Admin'},
+        </p>
+        <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
+          A new payment has been processed on the platform.
+        </p>
+        <div style="background-color: #eff6ff; border-left: 4px solid #2563eb; padding: 20px; margin: 20px 0; border-radius: 6px;">
+          <p style="color: #1e40af; margin: 5px 0; font-weight: 600;">Payment Details:</p>
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Property:</strong> ${data.propertyTitle || 'N/A'}</p>
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Client:</strong> ${data.clientName || 'N/A'}</p>
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Landlord:</strong> ${data.landlordName || 'N/A'}</p>
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Amount:</strong> ${data.currency || 'NGN'} ${data.amount ? parseFloat(data.amount).toLocaleString() : '0'}</p>
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Payment Type:</strong> ${data.paymentType === 'rent' ? 'Rent Payment' : 'Application Fee'}</p>
+          ${data.isEscrow ? `<p style="color: #1e40af; margin: 5px 0;"><strong>Escrow Status:</strong> Payment held in escrow</p>` : ''}
+          ${data.escrowExpiresAt ? `<p style="color: #1e40af; margin: 5px 0;"><strong>Escrow Expires:</strong> ${new Date(data.escrowExpiresAt).toLocaleDateString()}</p>` : ''}
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Payment ID:</strong> ${data.paymentId?.substring(0, 8) || 'N/A'}</p>
+          <p style="color: #1e40af; margin: 5px 0;"><strong>Application ID:</strong> ${data.applicationId?.substring(0, 8) || 'N/A'}</p>
+        </div>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${frontendUrl}/dashboard/admin/transactions" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: bold; font-size: 16px;">View Transaction</a>
+        </div>
+      `;
+      return {
+        subject: `New Payment Received - ${data.propertyTitle || 'Transaction'}`,
+        html: wrapEmailTemplate(content, 'New Payment Received'),
+        text: `Hi ${data.adminName || 'Admin'},\n\nA new payment has been processed on the platform.\n\nProperty: ${data.propertyTitle || 'N/A'}\nClient: ${data.clientName || 'N/A'}\nLandlord: ${data.landlordName || 'N/A'}\nAmount: ${data.currency || 'NGN'} ${data.amount ? parseFloat(data.amount).toLocaleString() : '0'}\nPayment Type: ${data.paymentType === 'rent' ? 'Rent Payment' : 'Application Fee'}\n${data.isEscrow ? 'Escrow Status: Payment held in escrow\n' : ''}${data.escrowExpiresAt ? `Escrow Expires: ${new Date(data.escrowExpiresAt).toLocaleDateString()}\n` : ''}Payment ID: ${data.paymentId?.substring(0, 8) || 'N/A'}\nApplication ID: ${data.applicationId?.substring(0, 8) || 'N/A'}\n\nView transaction: ${frontendUrl}/dashboard/admin/transactions`
+      };
     }
   };
 

@@ -483,7 +483,14 @@ router.get('/history', verifyToken, async (req, res) => {
 router.get('/receipt/:paymentId', verifyToken, async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.paymentId)
-      .populate('application', 'property client')
+      .populate({
+        path: 'application',
+        populate: [
+          { path: 'property', select: 'title price address location leaseTerms rentalType' },
+          { path: 'client', select: 'firstName lastName email' },
+          { path: 'landlord', select: 'firstName lastName email' }
+        ]
+      })
       .populate('user', 'firstName lastName email');
 
     if (!payment) {
@@ -491,33 +498,151 @@ router.get('/receipt/:paymentId', verifyToken, async (req, res) => {
     }
 
     // Check if user has access to this receipt
-    if (payment.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    const isClient = payment.user._id.toString() === req.user._id.toString();
+    const isLandlord = payment.application?.landlord?._id?.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isClient && !isLandlord && !isAdmin) {
       return res.status(403).json({ message: 'Not authorized to view this receipt' });
     }
 
-    // Generate receipt data
-    const receipt = {
-      paymentId: payment._id,
-      date: payment.createdAt,
+    // Generate description if not set
+    const paymentDescription = payment.description || 
+      (payment.type === 'rent' 
+        ? `Rent payment for property: ${payment.application?.property?.title || 'Property'}`
+        : `Application fee for property: ${payment.application?.property?.title || 'Property'}`);
+
+    // Get transaction ID - prefer charge ID, then payment intent ID, then session ID
+    const transactionId = payment.stripeChargeId || 
+                          payment.stripePaymentIntentId || 
+                          payment.stripeSessionId || 
+                          null;
+
+    // Generate receipt data (same format as query param endpoint)
+    const paymentData = {
+      id: payment._id.toString(),
       amount: payment.amount,
       currency: payment.currency,
       status: payment.status,
-      user: {
-        name: `${payment.user.firstName} ${payment.user.lastName}`,
-        email: payment.user.email
-      },
-      application: {
-        propertyTitle: payment.application?.property?.title || 'N/A',
-        applicationId: payment.application?._id
-      },
-      stripePaymentIntentId: payment.stripePaymentIntentId
+      description: paymentDescription,
+      transaction_id: transactionId,
+      stripe_payment_intent_id: payment.stripePaymentIntentId,
+      created_at: payment.createdAt,
+      updated_at: payment.updatedAt,
+      commission_rate: payment.commission_rate || 0,
+      commission_amount: payment.commission_amount || 0,
+      landlord_amount: payment.amount - (payment.commission_amount || 0),
+      isEscrow: payment.isEscrow,
+      escrowStatus: payment.escrowStatus,
+      application: payment.application ? {
+        id: payment.application._id.toString(),
+        lease_duration: payment.application.preferences?.leaseLength || payment.application.preferences?.leaseDuration,
+        monthly_income: payment.application.employment?.monthlyIncome || payment.application.financialInfo?.monthlyIncome,
+        employment_status: payment.application.employment?.employmentType,
+        move_in_date: payment.application.preferences?.moveInDate,
+        created_at: payment.application.applicationDate || payment.application.createdAt,
+        client: payment.application.client ? {
+          id: payment.application.client._id.toString(),
+          email: payment.application.client.email,
+          firstName: payment.application.client.firstName,
+          lastName: payment.application.client.lastName
+        } : null,
+        property: payment.application?.property ? {
+          id: payment.application.property._id?.toString() || payment.application.property.id,
+          title: payment.application.property.title || 'N/A',
+          location: payment.application.property.address && typeof payment.application.property.address === 'object'
+            ? `${payment.application.property.address.street || ''}, ${payment.application.property.address.city || ''}`.replace(/^,\s*|,\s*$/g, '').trim() || payment.application.property.address.city || payment.application.property.address.street || 'N/A'
+            : payment.application.property.location || 'N/A',
+          price: payment.application.property.price || 0,
+          duration: payment.application.property.leaseTerms?.minLease || payment.application.property.duration || 0
+        } : null,
+        landlord: payment.application.landlord ? {
+          id: payment.application.landlord._id.toString(),
+          email: payment.application.landlord.email,
+          firstName: payment.application.landlord.firstName,
+          lastName: payment.application.landlord.lastName
+        } : null
+      } : null
     };
 
-    res.json({ receipt });
+    const receiptData = {
+      receiptNumber: `RCT-${payment._id.toString().substring(0, 8).toUpperCase()}`,
+      issueDate: new Date().toISOString(),
+      payment: {
+        id: paymentData.id,
+        amount: paymentData.amount,
+        currency: paymentData.currency,
+        status: paymentData.status,
+        description: paymentData.description,
+        transactionId: paymentData.transaction_id || 'N/A',
+        stripePaymentIntentId: paymentData.stripe_payment_intent_id,
+        createdAt: paymentData.created_at,
+        updatedAt: paymentData.updated_at
+      },
+      client: {
+        id: paymentData.application?.client?.id,
+        email: paymentData.application?.client?.email,
+        name: paymentData.application?.client?.firstName && paymentData.application?.client?.lastName
+          ? `${paymentData.application.client.firstName} ${paymentData.application.client.lastName}`
+          : paymentData.application?.client?.email?.split('@')[0] || 'Client'
+      },
+      landlord: {
+        id: paymentData.application?.landlord?.id,
+        email: paymentData.application?.landlord?.email,
+        name: paymentData.application?.landlord?.firstName && paymentData.application?.landlord?.lastName
+          ? `${paymentData.application.landlord.firstName} ${paymentData.application.landlord.lastName}`
+          : paymentData.application?.landlord?.email?.split('@')[0] || 'Landlord'
+      },
+      property: paymentData.application?.property ? {
+        id: paymentData.application.property.id || null,
+        title: paymentData.application.property.title || 'N/A',
+        location: paymentData.application.property.location || 'N/A',
+        price: paymentData.application.property.price || 0,
+        duration: paymentData.application.property.duration || 0
+      } : {
+        id: null,
+        title: 'N/A',
+        location: 'N/A',
+        price: 0,
+        duration: 0
+      },
+      application: {
+        id: paymentData.application?.id,
+        leaseDuration: paymentData.application?.lease_duration,
+        monthlyIncome: paymentData.application?.monthly_income,
+        employmentStatus: paymentData.application?.employment_status,
+        moveInDate: paymentData.application?.move_in_date,
+        createdAt: paymentData.application?.created_at
+      },
+      platform: {
+        name: 'LandLordNoAgent',
+        website: process.env.FRONTEND_URL || 'http://localhost:3000',
+        supportEmail: 'support@landlordnoagent.com',
+        commissionRate: paymentData.commission_rate || 0,
+        commissionAmount: paymentData.commission_amount || 0,
+        landlordAmount: paymentData.landlord_amount || paymentData.amount
+      },
+      escrow: paymentData.isEscrow ? {
+        status: paymentData.escrowStatus,
+        heldAt: payment.escrowHeldAt,
+        expiresAt: payment.escrowExpiresAt,
+        releasedAt: payment.escrowReleasedAt
+      } : null
+    };
+
+    res.json({ 
+      success: true,
+      receipt: receiptData,
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
     console.error('Generate receipt error:', error);
-    res.status(500).json({ message: 'Server error while generating receipt' });
+    res.status(500).json({ 
+      error: 'Failed to generate receipt',
+      details: error.message || 'Unknown error',
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
@@ -530,10 +655,10 @@ router.get('/receipt', verifyToken, async (req, res) => {
   try {
     const { id: paymentId, client_id: clientId } = req.query;
 
-    if (!paymentId || !clientId) {
+    if (!paymentId) {
       return res.status(400).json({ 
-        error: 'Missing payment ID or client ID',
-        details: 'Both id and client_id parameters are required'
+        error: 'Missing payment ID',
+        details: 'The id parameter is required'
       });
     }
 
@@ -554,9 +679,35 @@ router.get('/receipt', verifyToken, async (req, res) => {
     }
 
     // Verify user has access to this payment
-    if (payment.user._id.toString() !== clientId && req.user.role !== 'admin') {
+    // Allow access if:
+    // 1. User is the client who made the payment
+    // 2. User is the landlord of the property
+    // 3. User is an admin
+    const isClient = payment.user._id.toString() === req.user._id.toString();
+    const isLandlord = payment.application?.landlord?._id?.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
+    
+    // If client_id is provided, validate it matches (for backward compatibility)
+    if (clientId && payment.user._id.toString() !== clientId && !isAdmin && !isLandlord) {
       return res.status(403).json({ message: 'Not authorized to view this receipt' });
     }
+
+    // Check authorization
+    if (!isClient && !isLandlord && !isAdmin) {
+      return res.status(403).json({ message: 'Not authorized to view this receipt' });
+    }
+
+    // Generate description if not set
+    const paymentDescription = payment.description || 
+      (payment.type === 'rent' 
+        ? `Rent payment for property: ${payment.application?.property?.title || 'Property'}`
+        : `Application fee for property: ${payment.application?.property?.title || 'Property'}`);
+
+    // Get transaction ID - prefer charge ID, then payment intent ID, then session ID
+    const transactionId = payment.stripeChargeId || 
+                          payment.stripePaymentIntentId || 
+                          payment.stripeSessionId || 
+                          null;
 
     // Get payment data from database
     const paymentData = {
@@ -564,8 +715,8 @@ router.get('/receipt', verifyToken, async (req, res) => {
       amount: payment.amount,
       currency: payment.currency,
       status: payment.status,
-      description: payment.description || 'Rental Payment',
-      transaction_id: payment.stripeChargeId || payment.stripePaymentIntentId,
+      description: paymentDescription,
+      transaction_id: transactionId,
       stripe_payment_intent_id: payment.stripePaymentIntentId,
       created_at: payment.createdAt,
       updated_at: payment.updatedAt,
@@ -614,8 +765,8 @@ router.get('/receipt', verifyToken, async (req, res) => {
         amount: payment.amount,
         currency: payment.currency,
         status: payment.status,
-        description: payment.description,
-        transactionId: payment.transaction_id,
+        description: paymentData.description,
+        transactionId: paymentData.transaction_id || 'N/A',
         stripePaymentIntentId: payment.stripe_payment_intent_id,
         createdAt: payment.created_at,
         updatedAt: payment.updated_at
@@ -630,11 +781,11 @@ router.get('/receipt', verifyToken, async (req, res) => {
             'Client'
       },
       landlord: {
-        id: payment.landlord?.id,
-        email: payment.landlord?.email,
-        name: payment.landlord?.kyc_data?.firstName || 
-              payment.landlord?.email?.split('@')[0] || 
-              'Landlord'
+        id: paymentData.application?.landlord?.id,
+        email: paymentData.application?.landlord?.email,
+        name: paymentData.application?.landlord?.firstName && paymentData.application?.landlord?.lastName
+          ? `${paymentData.application.landlord.firstName} ${paymentData.application.landlord.lastName}`
+          : paymentData.application?.landlord?.email?.split('@')[0] || 'Landlord'
       },
       property: paymentData.application?.property ? {
         id: paymentData.application.property.id || null,
