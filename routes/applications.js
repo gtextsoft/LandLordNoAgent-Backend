@@ -241,10 +241,17 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
 
       // Add dates
       if (move_in_date) {
+        // Enforce maximum lease duration of 12 months (Nigeria rental law)
+        const leaseDuration = Math.min(parseInt(lease_duration) || 12, 12);
+        if (leaseDuration > 12) {
+          return res.status(400).json({ 
+            message: 'Lease duration cannot exceed 12 months as per Nigeria rental regulations' 
+          });
+        }
         applicationData.preferences = {
           ...applicationData.preferences,
           moveInDate: move_in_date,
-          leaseDuration: parseInt(lease_duration) || 12
+          leaseDuration: leaseDuration
         };
       }
 

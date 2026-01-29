@@ -96,8 +96,8 @@ const validateApplication = [
     .withMessage('Valid move-in date is required'),
   body('applicationData.leaseLength')
     .optional()
-    .isInt({ min: 1, max: 24 })
-    .withMessage('Lease length must be between 1 and 24 months'),
+    .isInt({ min: 1, max: 12 })
+    .withMessage('Lease length must be between 1 and 12 months (maximum allowed in Nigeria)'),
   body('applicationData.monthlyIncome')
     .optional()
     .isFloat({ min: 0 })

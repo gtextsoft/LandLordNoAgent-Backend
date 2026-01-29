@@ -267,6 +267,30 @@ router.post('/', verifyToken, authorize('landlord'), async (req, res) => {
       landlord: req.user._id
     };
 
+    // Enforce maximum lease duration of 12 months (Nigeria rental law)
+    if (propertyData.leaseTerms) {
+      if (propertyData.leaseTerms.minLease && propertyData.leaseTerms.minLease > 12) {
+        return res.status(400).json({ 
+          message: 'Minimum lease duration cannot exceed 12 months as per Nigeria rental regulations' 
+        });
+      }
+      if (propertyData.leaseTerms.maxLease && propertyData.leaseTerms.maxLease > 12) {
+        return res.status(400).json({ 
+          message: 'Maximum lease duration cannot exceed 12 months as per Nigeria rental regulations' 
+        });
+      }
+      // Set maxLease to 12 if not specified or if it exceeds 12
+      if (!propertyData.leaseTerms.maxLease) {
+        propertyData.leaseTerms.maxLease = 12;
+      } else {
+        propertyData.leaseTerms.maxLease = Math.min(propertyData.leaseTerms.maxLease, 12);
+      }
+      // Ensure minLease doesn't exceed 12
+      if (propertyData.leaseTerms.minLease) {
+        propertyData.leaseTerms.minLease = Math.min(propertyData.leaseTerms.minLease, 12);
+      }
+    }
+
     // Transform images: if array of strings, convert to array of objects
     if (propertyData.images && Array.isArray(propertyData.images)) {
       propertyData.images = propertyData.images.map((img, index) => {
@@ -395,6 +419,30 @@ router.put('/:id', verifyToken, async (req, res) => {
 
     // Transform arrays of strings to arrays of objects for schema compliance
     const updateData = { ...req.body };
+
+    // Enforce maximum lease duration of 12 months (Nigeria rental law)
+    if (updateData.leaseTerms) {
+      if (updateData.leaseTerms.minLease && updateData.leaseTerms.minLease > 12) {
+        return res.status(400).json({ 
+          message: 'Minimum lease duration cannot exceed 12 months as per Nigeria rental regulations' 
+        });
+      }
+      if (updateData.leaseTerms.maxLease && updateData.leaseTerms.maxLease > 12) {
+        return res.status(400).json({ 
+          message: 'Maximum lease duration cannot exceed 12 months as per Nigeria rental regulations' 
+        });
+      }
+      // Set maxLease to 12 if not specified or if it exceeds 12
+      if (!updateData.leaseTerms.maxLease) {
+        updateData.leaseTerms.maxLease = 12;
+      } else {
+        updateData.leaseTerms.maxLease = Math.min(updateData.leaseTerms.maxLease, 12);
+      }
+      // Ensure minLease doesn't exceed 12
+      if (updateData.leaseTerms.minLease) {
+        updateData.leaseTerms.minLease = Math.min(updateData.leaseTerms.minLease, 12);
+      }
+    }
 
     // Transform images: if array of strings, convert to array of objects
     if (updateData.images && Array.isArray(updateData.images)) {

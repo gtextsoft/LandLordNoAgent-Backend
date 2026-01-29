@@ -147,9 +147,14 @@ const propertySchema = new mongoose.Schema({
   leaseTerms: {
     minLease: {
       type: Number,
-      default: 12 // months
+      default: 12, // months
+      max: 12 // Maximum allowed in Nigeria
     },
-    maxLease: Number,
+    maxLease: {
+      type: Number,
+      default: 12, // months - Maximum allowed in Nigeria
+      max: 12
+    },
     deposit: Number,
     petAllowed: {
       type: Boolean,
