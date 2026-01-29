@@ -2,6 +2,7 @@ const Payment = require('../models/Payment');
 const Application = require('../models/Application');
 const Property = require('../models/Property');
 const { sendEmail, getUserEmail, getEmailTemplate } = require('../utils/emailNotifications');
+const { createAuditLog } = require('../utils/auditLogger');
 
 /**
  * Shared Stripe webhook handlers.
@@ -156,6 +157,31 @@ async function handleCheckoutSessionCompleted(session) {
       console.error('Error sending payment success email:', emailError);
     }
 
+    // Audit log: Payment created/completed
+    try {
+      await createAuditLog({
+        action: 'payment_created',
+        entityType: 'Payment',
+        entityId: payment._id,
+        userId: userId,
+        details: {
+          paymentId: payment._id.toString(),
+          applicationId: applicationId,
+          amount: payment.amount,
+          currency: payment.currency,
+          type: payment.type,
+          status: payment.status,
+          isEscrow: payment.isEscrow,
+          stripeSessionId: sessionId
+        },
+        ipAddress: null, // Webhook doesn't have IP
+        userAgent: null // Webhook doesn't have user agent
+      });
+    } catch (auditError) {
+      console.error('Error creating payment audit log:', auditError);
+      // Don't fail payment creation if audit log fails
+    }
+
     return payment;
   } catch (error) {
     console.error('handleCheckoutSessionCompleted error:', error);
@@ -219,6 +245,28 @@ async function handlePaymentIntentFailed(paymentIntent) {
       } catch (emailError) {
         // Don't fail the handler if email fails
         console.error('Error sending payment failed email:', emailError);
+      }
+    }
+
+    // Audit log: Payment failed
+    if (payment && payment.user) {
+      try {
+        await createAuditLog({
+          action: 'payment_failed',
+          entityType: 'Payment',
+          entityId: payment._id,
+          userId: payment.user._id || payment.user,
+          details: {
+            paymentId: payment._id.toString(),
+            stripePaymentIntentId: id,
+            failureReason: paymentIntent?.last_payment_error?.message,
+            failureCode: paymentIntent?.last_payment_error?.code
+          },
+          ipAddress: null,
+          userAgent: null
+        });
+      } catch (auditError) {
+        console.error('Error creating payment audit log:', auditError);
       }
     }
   } catch (error) {

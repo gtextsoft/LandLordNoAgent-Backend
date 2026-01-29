@@ -5,6 +5,7 @@ const nodemailer = require("nodemailer");
 const { Resend } = require("resend");
 const User = require("../models/User");
 const { generateToken, verifyToken } = require("../middleware/auth");
+const { createAuditLog, getRequestMetadata } = require("../utils/auditLogger");
 
 // Initialize Resend
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -172,6 +173,45 @@ router.post("/register", async (req, res) => {
       console.log('Email failed, but continuing with registration. OTP:', otp);
       // Don't fail registration if email fails - just log the OTP
     }
+
+    // Send welcome email (check preferences first)
+    try {
+      const { sendEmail, getEmailTemplate, checkNotificationPreference } = require('../utils/emailNotifications');
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      
+      // Check if user wants welcome emails (defaults to true for new users)
+      const canSendWelcome = await checkNotificationPreference(user._id, 'welcome');
+      
+      if (canSendWelcome) {
+        const welcomeTemplate = getEmailTemplate('welcome', {
+          name: `${firstName} ${lastName}`.trim() || firstName || email.split('@')[0],
+          role: role,
+          dashboardUrl: `${frontendUrl}/dashboard/${role}`
+        });
+        
+        if (welcomeTemplate) {
+          await sendEmail(email, welcomeTemplate.subject, welcomeTemplate.html, welcomeTemplate.text);
+          console.log(`✅ Welcome email sent to ${email}`);
+        }
+      } else {
+        console.log(`Welcome email skipped for ${email} - user has disabled welcome notifications`);
+      }
+    } catch (welcomeEmailError) {
+      console.error('Error sending welcome email:', welcomeEmailError);
+      // Don't fail registration if welcome email fails
+    }
+
+    // Audit log: User registration
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'user_registered',
+      entityType: 'User',
+      entityId: user._id,
+      userId: user._id,
+      details: { email: user.email, role: user.role },
+      ipAddress,
+      userAgent
+    });
 
     res.status(201).json({
       message:
@@ -346,6 +386,22 @@ router.post("/login", async (req, res) => {
     // Generate token
     const token = generateToken(user._id);
 
+    // Audit log: User login
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'user_login',
+      entityType: 'User',
+      entityId: user._id,
+      userId: user._id,
+      details: { email: user.email, role: user.role },
+      ipAddress,
+      userAgent
+    });
+
+    // Map verification status (same logic as /auth/me endpoint)
+    const isVerified = user.isVerified || user.kyc?.status === 'verified';
+    const is_verified = isVerified || user.kyc?.status === 'verified';
+
     res.json({
       message: "Login successful",
       token,
@@ -356,6 +412,11 @@ router.post("/login", async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         isEmailVerified: user.isEmailVerified,
+        isVerified: isVerified,
+        is_verified: is_verified,
+        kyc: user.kyc ? {
+          status: user.kyc.status
+        } : undefined,
         lastLogin: user.lastLogin,
       },
     });
@@ -370,12 +431,24 @@ router.post("/login", async (req, res) => {
 // // @route   POST /api/auth/logout
 // // @desc    Logout user (JWT-based)
 // // @access  Private
-router.post("/logout", async (req, res) => {
+router.post("/logout", verifyToken, async (req, res) => {
   try {
-    // OPTIONAL: Audit log
+    // Update last logout time
     if (req.user) {
-      await User.findByIdAndUpdate(req.user.id, {
+      await User.findByIdAndUpdate(req.user._id, {
         $set: { lastLogout: new Date() },
+      });
+
+      // Audit log: User logout
+      const { ipAddress, userAgent } = getRequestMetadata(req);
+      await createAuditLog({
+        action: 'user_logout',
+        entityType: 'User',
+        entityId: req.user._id,
+        userId: req.user._id,
+        details: { email: req.user.email, role: req.user.role },
+        ipAddress,
+        userAgent
       });
     }
 
@@ -419,33 +492,99 @@ router.post("/forgot-password", async (req, res) => {
     user.passwordResetExpires = resetExpires;
     await user.save();
 
-    // Send reset email
-    const transporter = createTransporter();
-    const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
-
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "Password Reset - Landlord No Agent",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #333;">Password Reset Request</h2>
-          <p>You requested a password reset for your account.</p>
-          <p>Click the link below to reset your password:</p>
-          <a href="${resetUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Password</a>
-          <p>This link will expire in 1 hour.</p>
-          <p>If you didn't request this reset, please ignore this email.</p>
-        </div>
-      `,
+    // Audit log: Password reset requested
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'password_reset_requested',
+      entityType: 'User',
+      entityId: user._id,
+      userId: user._id,
+      details: { email: user.email },
+      ipAddress,
+      userAgent
     });
+
+    // Send reset email – use Resend first (same as OTP), then fall back to SMTP
+    const resetUrl = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/auth/reset-password?token=${resetToken}`;
+    const fromAddress = process.env.EMAIL_FROM || 'Landlord No Agent <onboarding@resend.dev>';
+    const logoUrl = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/logo.png`;
+
+    const resetEmailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Password Reset</title></head>
+      <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+          <div style="background: linear-gradient(135deg, #249479 0%, #1d4ed8 100%); padding: 40px 20px; text-align: center;">
+            <img src="${logoUrl}" alt="LandLordNoAgent" style="max-width: 200px; height: auto; margin-bottom: 15px;" />
+            <h1 style="color: #fff; margin: 0; font-size: 28px; font-weight: bold;">Password Reset</h1>
+            <p style="color: #e0e7ff; margin: 8px 0 0 0; font-size: 16px;">LandLordNoAgent</p>
+          </div>
+          <div style="padding: 40px 30px;">
+            <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">Reset Your Password</h2>
+            <p style="color: #6b7280; line-height: 1.6;">You requested a password reset for your account. Click the button below to set a new password.</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetUrl}" style="display: inline-block; background-color: #249479; color: #fff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: bold; font-size: 16px;">Reset Password</a>
+            </div>
+            <p style="color: #6b7280; font-size: 14px;">This link expires in 1 hour. If you didn't request this, please ignore this email.</p>
+          </div>
+          <div style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e5e7eb;">
+            <p style="color: #6b7280; font-size: 14px; margin: 0;">© ${new Date().getFullYear()} LandLordNoAgent. All rights reserved.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    let emailSent = false;
+
+    if (resend) {
+      try {
+        const { data, error } = await resend.emails.send({
+          from: fromAddress,
+          to: email,
+          subject: 'Password Reset - LandLordNoAgent',
+          html: resetEmailHtml,
+          text: `Reset your password: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, please ignore this email.`,
+        });
+        if (error) throw new Error(error.message);
+        emailSent = true;
+        console.log('✅ Password reset email sent via Resend:', data?.id);
+      } catch (resendErr) {
+        console.error('❌ Resend password reset failed:', resendErr.message);
+      }
+    }
+
+    if (!emailSent && process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+      try {
+        const transporter = createTransporter();
+        await transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: email,
+          subject: 'Password Reset - LandLordNoAgent',
+          html: resetEmailHtml,
+        });
+        emailSent = true;
+        console.log('✅ Password reset email sent via SMTP');
+      } catch (smtpErr) {
+        console.error('❌ SMTP password reset failed:', smtpErr.message);
+      }
+    }
+
+    if (!emailSent) {
+      console.error('Password reset email not sent: no Resend API key or SMTP config');
+      return res.status(503).json({
+        message: 'Unable to send password reset email. Please try again later or contact support.',
+      });
+    }
 
     res.json({
-      message: "Password reset email sent",
+      message: 'Password reset email sent',
     });
   } catch (error) {
-    console.error("Forgot password error:", error);
+    console.error('Forgot password error:', error);
     res.status(500).json({
-      message: "Server error while sending reset email",
+      message: 'Server error while sending reset email',
     });
   }
 });
@@ -479,6 +618,18 @@ router.post("/reset-password", async (req, res) => {
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
+
+    // Audit log: Password reset
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'password_reset',
+      entityType: 'User',
+      entityId: user._id,
+      userId: user._id,
+      details: { email: user.email },
+      ipAddress,
+      userAgent
+    });
 
     res.json({
       message: "Password reset successfully",

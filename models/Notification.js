@@ -60,7 +60,9 @@ const notificationSchema = new mongoose.Schema({
   metadata: {
     source: String,
     ipAddress: String,
-    userAgent: String
+    userAgent: String,
+    actionRequired: Boolean,
+    createdBy: String
   },
   expiresAt: Date,
   isActive: {

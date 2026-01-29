@@ -248,13 +248,38 @@ router.get('/report', async (req, res) => {
     }));
     
     if (format === 'csv') {
+      // Helper function to escape CSV values
+      const escapeCsvValue = (value) => {
+        if (value === null || value === undefined) return '';
+        const stringValue = String(value);
+        // If value contains comma, quote, or newline, wrap in quotes and escape quotes
+        if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+          return `"${stringValue.replace(/"/g, '""')}"`;
+        }
+        return stringValue;
+      };
+      
       // Convert to CSV format
       const csvHeader = 'Payment ID,Date,Landlord ID,Landlord Name,Landlord Email,Client ID,Client Name,Gross Amount,Commission Rate,Commission Amount,Net Amount,Currency,Status\n';
       const csvRows = report.map(row => 
-        `${row.paymentId},${row.date.toISOString()},${row.landlordId},${row.landlordName},${row.landlordEmail},${row.clientId},${row.clientName},${row.grossAmount},${row.commissionRate},${row.commissionAmount},${row.netAmount},${row.currency},${row.status}`
+        [
+          escapeCsvValue(row.paymentId),
+          escapeCsvValue(row.date ? row.date.toISOString() : ''),
+          escapeCsvValue(row.landlordId),
+          escapeCsvValue(row.landlordName),
+          escapeCsvValue(row.landlordEmail),
+          escapeCsvValue(row.clientId),
+          escapeCsvValue(row.clientName),
+          escapeCsvValue(row.grossAmount),
+          escapeCsvValue(row.commissionRate),
+          escapeCsvValue(row.commissionAmount),
+          escapeCsvValue(row.netAmount),
+          escapeCsvValue(row.currency || 'NGN'),
+          escapeCsvValue(row.status)
+        ].join(',')
       ).join('\n');
       
-      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename=commission-report-${Date.now()}.csv`);
       return res.send(csvHeader + csvRows);
     }

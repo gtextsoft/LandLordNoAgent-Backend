@@ -545,40 +545,62 @@ router.get('/notifications', async (req, res) => {
   }
 });
 
+const NOTIFICATION_TYPES = ['application_received', 'application_approved', 'application_rejected', 'payment_received', 'payment_failed', 'maintenance_request', 'maintenance_completed', 'viewing_scheduled', 'viewing_cancelled', 'message_received', 'property_verified', 'kyc_approved', 'kyc_rejected', 'system_announcement', 'other'];
+const NOTIFICATION_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
+
 /**
  * @route   POST /api/admin/notifications
- * @desc    Create a notification for this admin (or broadcast to all admins)
+ * @desc    Create a notification for admins and/or all users (in-app notifications)
  * @access  Private (Admin)
  */
 router.post('/notifications', async (req, res) => {
   try {
-    const { type = 'other', title, message, priority = 'medium', action_required = false, action_url, broadcast = true } = req.body || {};
+    const { type = 'other', title, message, priority = 'medium', action_required = false, action_url, broadcast = true, target = 'admins' } = req.body || {};
 
     if (!title || !message) {
       return res.status(400).json({ message: 'title and message are required' });
     }
 
-    const adminIds = broadcast
-      ? (await User.find({ role: 'admin' }).select('_id')).map(u => u._id)
-      : [req.user._id];
+    const resolvedType = type === 'custom' ? 'other' : type;
+    if (!NOTIFICATION_TYPES.includes(resolvedType)) {
+      return res.status(400).json({ message: `Invalid type. Allowed: ${NOTIFICATION_TYPES.join(', ')}` });
+    }
+    if (!NOTIFICATION_PRIORITIES.includes(priority)) {
+      return res.status(400).json({ message: `Invalid priority. Allowed: ${NOTIFICATION_PRIORITIES.join(', ')}` });
+    }
+
+    let recipientIds = [];
+    if (target === 'all_users') {
+      const users = await User.find({}).select('_id');
+      recipientIds = users.map(u => u._id);
+    } else {
+      recipientIds = broadcast
+        ? (await User.find({ role: 'admin' }).select('_id')).map(u => u._id)
+        : [req.user._id];
+    }
+
+    if (recipientIds.length === 0) {
+      return res.status(201).json({ message: 'Notification created', count: 0 });
+    }
+
+    const payload = {
+      type: resolvedType,
+      title: String(title).trim(),
+      message: String(message).trim(),
+      priority,
+      actionUrl: action_url ? String(action_url).trim() : undefined,
+      metadata: { actionRequired: !!action_required, createdBy: req.user._id.toString() }
+    };
 
     const created = await Notification.insertMany(
-      adminIds.map(id => ({
-        user: id,
-        type: type === 'custom' ? 'other' : type,
-        title,
-        message,
-        priority,
-        actionUrl: action_url || undefined,
-        metadata: { actionRequired: !!action_required, createdBy: req.user._id.toString() }
-      }))
+      recipientIds.map(userId => ({ user: userId, ...payload }))
     );
 
     await AuditLog.create({
       action: 'admin_notification_created',
       entityType: 'Notification',
       userId: req.user._id,
-      details: { count: created.length, title, priority, broadcast },
+      details: { count: created.length, title, priority, broadcast, target },
       ipAddress: req.ip,
       userAgent: req.get('user-agent')
     }).catch(() => undefined);
@@ -1056,6 +1078,68 @@ router.put('/properties/:id/verify', verifyToken, authorize('admin'), async (req
     } catch (notifError) {
       console.error('Error sending notification:', notifError);
       // Don't fail the request if notification fails
+    }
+
+    // If property is verified, send email notifications to clients about new property
+    if (isVerified) {
+      try {
+        const { sendEmail, getEmailTemplate } = require('../utils/emailNotifications');
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        
+        // Get all client users (you can optimize this later to only send to clients with saved searches)
+        const clients = await User.find({ role: 'client', isEmailVerified: true })
+          .select('email firstName lastName _id')
+          .limit(1000); // Limit to prevent overwhelming the email service
+        
+        // Send email to each client (check preferences first)
+        const propertyLocation = property.address 
+          ? `${property.address.city || ''}${property.address.state ? `, ${property.address.state}` : ''}`.trim() || 'Location'
+          : 'Location';
+        
+        const { checkNotificationPreference } = require('../utils/emailNotifications');
+        
+        const emailPromises = clients.map(async (client) => {
+          try {
+            // Check if client wants new property listing emails
+            const canSend = await checkNotificationPreference(client._id, 'newPropertyListed');
+            
+            if (!canSend) {
+              return { success: false, email: client.email, error: 'Notification disabled by user preference', skipped: true };
+            }
+            
+            const template = getEmailTemplate('newPropertyListed', {
+              clientName: client.firstName || client.email.split('@')[0],
+              propertyTitle: property.title,
+              propertyLocation: propertyLocation,
+              propertyPrice: property.price,
+              currency: property.currency || 'NGN',
+              propertyType: property.propertyType,
+              bedrooms: property.bedrooms,
+              bathrooms: property.bathrooms,
+              propertyId: property._id.toString(),
+              propertyUrl: `${frontendUrl}/property/${property._id}`
+            });
+            
+            if (template) {
+              await sendEmail(client.email, template.subject, template.html, template.text);
+              return { success: true, email: client.email };
+            }
+            return { success: false, email: client.email, error: 'No template' };
+          } catch (emailError) {
+            console.error(`Error sending new property email to ${client.email}:`, emailError);
+            return { success: false, email: client.email, error: emailError.message };
+          }
+        });
+        
+        const results = await Promise.allSettled(emailPromises);
+        const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+        const failed = results.length - successful;
+        
+        console.log(`✅ New property listing emails sent: ${successful} successful, ${failed} failed`);
+      } catch (emailError) {
+        console.error('Error sending new property listing emails:', emailError);
+        // Don't fail the request if email fails
+      }
     }
 
     res.json({

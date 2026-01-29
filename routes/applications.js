@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Payment = require('../models/Payment');
 const { verifyToken, authorize } = require('../middleware/auth');
 const { notifyApplicationStatusChange, notifyNewApplication } = require('../utils/notifications');
+const { createAuditLog, getRequestMetadata } = require('../utils/auditLogger');
 
 const router = express.Router();
 
@@ -317,6 +318,18 @@ router.post('/', verifyToken, authorize('client'), async (req, res) => {
       // Don't fail the request if notification fails
     }
 
+    // Audit log: Application created
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'application_created',
+      entityType: 'Application',
+      entityId: application._id,
+      userId: req.user._id,
+      details: { applicationId: application._id.toString(), propertyId: propertyIdValue.toString(), status: application.status },
+      ipAddress,
+      userAgent
+    });
+
     res.status(201).json({
       message: 'Application submitted successfully',
       application
@@ -418,6 +431,24 @@ router.put('/:id', verifyToken, async (req, res) => {
         // Don't fail the request if notification fails
       }
     }
+
+    // Audit log: Application updated
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    const statusChanged = req.body.status && req.body.status !== application.status;
+    await createAuditLog({
+      action: statusChanged ? 'application_status_changed' : 'application_updated',
+      entityType: 'Application',
+      entityId: req.params.id,
+      userId: req.user._id,
+      details: { 
+        applicationId: req.params.id,
+        oldStatus: application.status,
+        newStatus: req.body.status || application.status,
+        updatedFields: Object.keys(allowedUpdates)
+      },
+      ipAddress,
+      userAgent
+    });
 
     res.json({
       message: 'Application updated successfully',

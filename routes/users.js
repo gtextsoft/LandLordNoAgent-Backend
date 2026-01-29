@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Property = require('../models/Property');
 const { verifyToken, authorize } = require('../middleware/auth');
 const { notifyKYCStatus } = require('../utils/notifications');
+const { createAuditLog, getRequestMetadata } = require('../utils/auditLogger');
 
 const router = express.Router();
 
@@ -40,6 +41,18 @@ router.put('/profile', verifyToken, async (req, res) => {
       updates,
       { new: true, runValidators: true }
     ).select('-password');
+
+    // Audit log: Profile update
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'profile_updated',
+      entityType: 'User',
+      entityId: req.user._id,
+      userId: req.user._id,
+      details: { updatedFields: Object.keys(updates) },
+      ipAddress,
+      userAgent
+    });
 
     res.json({
       message: 'Profile updated successfully',
@@ -83,6 +96,18 @@ router.post('/upload-kyc', verifyToken, async (req, res) => {
     }
 
     await user.save();
+
+    // Audit log: KYC documents uploaded
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'kyc_documents_uploaded',
+      entityType: 'User',
+      entityId: req.user._id,
+      userId: req.user._id,
+      details: { documentCount: documents.length },
+      ipAddress,
+      userAgent
+    });
 
     // Notify admins about new KYC submission
     if (isNewKycSubmission) {
@@ -469,6 +494,120 @@ If you have any questions, please contact our support team.`;
   } catch (error) {
     console.error('Update KYC status error:', error);
     res.status(500).json({ message: 'Server error while updating KYC status' });
+  }
+});
+
+// @route   GET /api/users/notification-preferences
+// @desc    Get user notification preferences
+// @access  Private
+router.get('/notification-preferences', verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('preferences');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Return preferences with defaults if not set
+    const preferences = {
+      emailNotifications: user.preferences?.emailNotifications ?? true,
+      smsNotifications: user.preferences?.smsNotifications ?? false,
+      notificationPreferences: {
+        welcome: user.preferences?.notificationPreferences?.welcome ?? true,
+        newPropertyListed: user.preferences?.notificationPreferences?.newPropertyListed ?? true,
+        applicationReceived: user.preferences?.notificationPreferences?.applicationReceived ?? true,
+        applicationStatusChange: user.preferences?.notificationPreferences?.applicationStatusChange ?? true,
+        newMessage: user.preferences?.notificationPreferences?.newMessage ?? true,
+        viewingAppointment: user.preferences?.notificationPreferences?.viewingAppointment ?? true,
+        maintenanceRequest: user.preferences?.notificationPreferences?.maintenanceRequest ?? true,
+        propertyVerified: user.preferences?.notificationPreferences?.propertyVerified ?? true,
+        kycStatus: user.preferences?.notificationPreferences?.kycStatus ?? true,
+        paymentSuccess: user.preferences?.notificationPreferences?.paymentSuccess ?? true,
+        paymentFailed: user.preferences?.notificationPreferences?.paymentFailed ?? true,
+        escrowReleased: user.preferences?.notificationPreferences?.escrowReleased ?? true
+      }
+    };
+
+    res.json({ preferences });
+  } catch (error) {
+    console.error('Get notification preferences error:', error);
+    res.status(500).json({ message: 'Server error while fetching notification preferences' });
+  }
+});
+
+// @route   PUT /api/users/notification-preferences
+// @desc    Update user notification preferences
+// @access  Private
+router.put('/notification-preferences', verifyToken, async (req, res) => {
+  try {
+    const { emailNotifications, smsNotifications, notificationPreferences } = req.body;
+    
+    const updates = {};
+    
+    if (emailNotifications !== undefined) {
+      updates['preferences.emailNotifications'] = emailNotifications;
+    }
+    
+    if (smsNotifications !== undefined) {
+      updates['preferences.smsNotifications'] = smsNotifications;
+    }
+    
+    if (notificationPreferences && typeof notificationPreferences === 'object') {
+      Object.keys(notificationPreferences).forEach(key => {
+        if (typeof notificationPreferences[key] === 'boolean') {
+          updates[`preferences.notificationPreferences.${key}`] = notificationPreferences[key];
+        }
+      });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select('preferences');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Audit log: Notification preferences update
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'notification_preferences_updated',
+      entityType: 'User',
+      entityId: req.user._id,
+      userId: req.user._id,
+      details: { preferences: updates },
+      ipAddress,
+      userAgent
+    }).catch(() => {}); // Don't fail if audit log fails
+
+    const responsePreferences = {
+      emailNotifications: user.preferences?.emailNotifications ?? true,
+      smsNotifications: user.preferences?.smsNotifications ?? false,
+      notificationPreferences: {
+        welcome: user.preferences?.notificationPreferences?.welcome ?? true,
+        newPropertyListed: user.preferences?.notificationPreferences?.newPropertyListed ?? true,
+        applicationReceived: user.preferences?.notificationPreferences?.applicationReceived ?? true,
+        applicationStatusChange: user.preferences?.notificationPreferences?.applicationStatusChange ?? true,
+        newMessage: user.preferences?.notificationPreferences?.newMessage ?? true,
+        viewingAppointment: user.preferences?.notificationPreferences?.viewingAppointment ?? true,
+        maintenanceRequest: user.preferences?.notificationPreferences?.maintenanceRequest ?? true,
+        propertyVerified: user.preferences?.notificationPreferences?.propertyVerified ?? true,
+        kycStatus: user.preferences?.notificationPreferences?.kycStatus ?? true,
+        paymentSuccess: user.preferences?.notificationPreferences?.paymentSuccess ?? true,
+        paymentFailed: user.preferences?.notificationPreferences?.paymentFailed ?? true,
+        escrowReleased: user.preferences?.notificationPreferences?.escrowReleased ?? true
+      }
+    };
+
+    res.json({
+      message: 'Notification preferences updated successfully',
+      preferences: responsePreferences
+    });
+  } catch (error) {
+    console.error('Update notification preferences error:', error);
+    res.status(500).json({ message: 'Server error while updating notification preferences' });
   }
 });
 

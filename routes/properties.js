@@ -3,6 +3,7 @@ const Property = require('../models/Property');
 const Application = require('../models/Application');
 const User = require('../models/User');
 const { verifyToken, authorize, optionalAuth } = require('../middleware/auth');
+const { createAuditLog, getRequestMetadata } = require('../utils/auditLogger');
 
 const router = express.Router();
 
@@ -336,6 +337,18 @@ router.post('/', verifyToken, authorize('landlord'), async (req, res) => {
 
     await property.populate('landlord', 'firstName lastName email phone');
 
+    // Audit log: Property created
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'property_created',
+      entityType: 'Property',
+      entityId: property._id,
+      userId: req.user._id,
+      details: { propertyId: property._id.toString(), title: property.title },
+      ipAddress,
+      userAgent
+    });
+
     // Notify admins about new property
     try {
       const { notifyAdmins } = require('../utils/notifications');
@@ -454,6 +467,18 @@ router.put('/:id', verifyToken, async (req, res) => {
       { new: true, runValidators: true }
     ).populate('landlord', 'firstName lastName email phone');
 
+    // Audit log: Property updated
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'property_updated',
+      entityType: 'Property',
+      entityId: req.params.id,
+      userId: req.user._id,
+      details: { propertyId: req.params.id, updatedFields: Object.keys(updateData) },
+      ipAddress,
+      userAgent
+    });
+
     res.json({
       message: 'Property updated successfully',
       property: updatedProperty
@@ -482,6 +507,18 @@ router.delete('/:id', verifyToken, async (req, res) => {
     }
 
     await Property.findByIdAndDelete(req.params.id);
+
+    // Audit log: Property deleted
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'property_deleted',
+      entityType: 'Property',
+      entityId: req.params.id,
+      userId: req.user._id,
+      details: { propertyId: req.params.id, title: property.title },
+      ipAddress,
+      userAgent
+    });
 
     res.json({ message: 'Property deleted successfully' });
 

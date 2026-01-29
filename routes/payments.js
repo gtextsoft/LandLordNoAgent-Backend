@@ -8,6 +8,7 @@ const {
   handlePaymentIntentSucceeded,
   handlePaymentIntentFailed
 } = require('../services/stripeWebhookHandlers');
+const { createAuditLog, getRequestMetadata } = require('../utils/auditLogger');
 
 const router = express.Router();
 const Stripe = require('stripe'); 
@@ -893,6 +894,27 @@ router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, r
       req.ip,
       req.get('user-agent')
     );
+
+    // Audit log: Escrow released
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'escrow_released',
+      entityType: 'Payment',
+      entityId: payment._id,
+      userId: req.user._id,
+      details: {
+        paymentId: payment._id.toString(),
+        applicationId: payment.application._id.toString(),
+        grossAmount,
+        commissionRate,
+        commissionAmount,
+        landlordNetAmount,
+        escrowInterest: interest,
+        daysHeld
+      },
+      ipAddress,
+      userAgent
+    });
     
     await payment.save();
     
@@ -999,6 +1021,18 @@ router.put('/:id/escrow/documents', verifyToken, async (req, res) => {
 
     payment.documentsReceived = true;
     await payment.save();
+
+    // Audit log: Documents received marked
+    const { ipAddress, userAgent } = getRequestMetadata(req);
+    await createAuditLog({
+      action: 'documents_received_marked',
+      entityType: 'Payment',
+      entityId: payment._id,
+      userId: req.user._id,
+      details: { paymentId: payment._id.toString() },
+      ipAddress,
+      userAgent
+    });
 
     res.json({
       message: 'Documents received marked',

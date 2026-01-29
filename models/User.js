@@ -100,6 +100,57 @@ const userSchema = new mongoose.Schema({
     currency: {
       type: String,
       default: 'NGN'
+    },
+    // Granular email notification preferences
+    notificationPreferences: {
+      welcome: {
+        type: Boolean,
+        default: true
+      },
+      newPropertyListed: {
+        type: Boolean,
+        default: true
+      },
+      applicationReceived: {
+        type: Boolean,
+        default: true
+      },
+      applicationStatusChange: {
+        type: Boolean,
+        default: true
+      },
+      newMessage: {
+        type: Boolean,
+        default: true
+      },
+      viewingAppointment: {
+        type: Boolean,
+        default: true
+      },
+      maintenanceRequest: {
+        type: Boolean,
+        default: true
+      },
+      propertyVerified: {
+        type: Boolean,
+        default: true
+      },
+      kycStatus: {
+        type: Boolean,
+        default: true
+      },
+      paymentSuccess: {
+        type: Boolean,
+        default: true
+      },
+      paymentFailed: {
+        type: Boolean,
+        default: true
+      },
+      escrowReleased: {
+        type: Boolean,
+        default: true
+      }
     }
   },
   
