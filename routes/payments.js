@@ -1068,7 +1068,22 @@ router.put('/:id/escrow/release', verifyToken, authorize('admin'), async (req, r
     });
     
     await payment.save();
-    
+
+    // Update application lease dates from rent period (for rent payment tracking)
+    if (payment.type === 'rent' && payment.rentPeriodStart && payment.rentPeriodEnd) {
+      const appUpdate = {};
+      const app = await Application.findById(payment.application._id || payment.application).select('decision');
+      if (app && (!app.decision || !app.decision.leaseStartDate)) {
+        appUpdate['decision.leaseStartDate'] = payment.rentPeriodStart;
+      }
+      if (app && (!app.decision || !app.decision.leaseEndDate)) {
+        appUpdate['decision.leaseEndDate'] = payment.rentPeriodEnd;
+      }
+      if (Object.keys(appUpdate).length > 0) {
+        await Application.findByIdAndUpdate(payment.application._id || payment.application, { $set: appUpdate });
+      }
+    }
+
     console.log(`✅ Escrow released: Payment ${payment._id}, Gross: ₦${grossAmount}, Commission: ₦${commissionAmount} (${(commissionRate * 100)}%), Net: ₦${landlordNetAmount}`);
 
     // Send escrow released email notification to landlord

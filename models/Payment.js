@@ -30,7 +30,11 @@ const paymentSchema = new mongoose.Schema({
     enum: ['application_fee', 'rent', 'deposit', 'maintenance', 'other'],
     required: true
   },
-  
+
+  // Rent period (for type === 'rent'): the date range this payment covers
+  rentPeriodStart: Date,
+  rentPeriodEnd: Date,
+
   // Stripe Information
   stripePaymentIntentId: String,
   stripeSessionId: String,

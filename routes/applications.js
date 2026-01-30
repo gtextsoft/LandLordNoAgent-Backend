@@ -61,6 +61,238 @@ router.get('/', verifyToken, async (req, res) => {
   }
 });
 
+// @route   GET /api/applications/tenancies
+// @desc    Get active tenancies with rent expiration dates (for landlord or client)
+// @access  Private
+// Get actual lease duration in months from application (no hardcoded 1 or 12)
+function getActualLeaseMonths(app) {
+  const fromPrefs = app.preferences?.leaseLength ?? app.preferences?.leaseDuration;
+  const fromTop = app.lease_duration ?? app.leaseDuration;
+  const fromProperty = app.property?.leaseTerms?.minLease ?? app.property?.leaseTerms?.maxLease;
+  const n = [fromPrefs, fromTop, fromProperty].find(v => v != null && !Number.isNaN(Number(v)) && Number(v) > 0);
+  return n != null ? Math.round(Number(n)) : 12;
+}
+
+router.get('/tenancies', verifyToken, async (req, res) => {
+  try {
+    const Payment = require('../models/Payment');
+    const tenancies = [];
+
+    if (req.user.role === 'client') {
+      // Client: fetch from payments keyed by user id; get application (and duration) from payment
+      const clientPayments = await Payment.find({
+        user: req.user._id,
+        type: 'rent',
+        status: 'completed'
+      })
+        .sort({ createdAt: -1 })
+        .populate({
+          path: 'application',
+          populate: [
+            { path: 'property', select: 'title price address images rentalType leaseTerms' },
+            { path: 'client', select: 'firstName lastName email phone' },
+            { path: 'landlord', select: 'firstName lastName email phone' }
+          ]
+        })
+        .select('application rentPeriodStart rentPeriodEnd amount currency createdAt')
+        .lean();
+
+      // Group by application id and keep latest payment per application
+      const appIdToPayment = new Map();
+      for (const p of clientPayments) {
+        const app = p.application;
+        if (!app) continue;
+        const appId = (app._id && app._id.toString) ? app._id.toString() : String(app._id || app);
+        if (!appIdToPayment.has(appId)) {
+          appIdToPayment.set(appId, p);
+        }
+      }
+
+      for (const [, lastRentPayment] of appIdToPayment) {
+        const app = lastRentPayment.application;
+        if (!app) continue;
+
+        // Actual duration from payment's application (no hardcoded fallback)
+        const leaseMonths = getActualLeaseMonths(app);
+
+        // Use stored period if present; otherwise derive from application or payment date
+        let rentPeriodStart = lastRentPayment.rentPeriodStart;
+        let rentPeriodEnd = lastRentPayment.rentPeriodEnd;
+        if (!rentPeriodEnd) {
+          const baseDate = app.decision?.leaseStartDate
+            ? new Date(app.decision.leaseStartDate)
+            : (lastRentPayment.createdAt ? new Date(lastRentPayment.createdAt) : new Date());
+          rentPeriodStart = rentPeriodStart || baseDate;
+          const end = new Date(rentPeriodStart);
+          end.setMonth(end.getMonth() + leaseMonths);
+          end.setDate(end.getDate() - 1);
+          rentPeriodEnd = end;
+        }
+
+        const rentExpirationDate = rentPeriodEnd;
+        const now = new Date();
+        const expiresAt = new Date(rentExpirationDate);
+        const daysUntilExpiry = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
+        let status = 'active';
+        if (daysUntilExpiry < 0) status = 'expired';
+        else if (daysUntilExpiry <= 30) status = 'expiring_soon';
+
+        tenancies.push({
+          applicationId: app._id,
+          property: app.property,
+          client: app.client,
+          landlord: app.landlord,
+          rentExpirationDate: rentExpirationDate,
+          rentPeriodStart: rentPeriodStart,
+          rentPeriodEnd: rentPeriodEnd,
+          leaseStartDate: app.decision?.leaseStartDate || rentPeriodStart,
+          leaseEndDate: app.decision?.leaseEndDate || rentPeriodEnd,
+          leaseDurationMonths: leaseMonths,
+          monthlyRent: app.property?.price,
+          lastPaymentAmount: lastRentPayment.amount,
+          currency: lastRentPayment.currency || 'NGN',
+          daysUntilExpiry,
+          status
+        });
+      }
+    } else if (req.user.role === 'landlord') {
+      // Landlord: applications for their properties, then latest rent payment per application
+      const applications = await Application.find({
+        landlord: req.user._id,
+        status: { $in: ['approved', 'accepted'] }
+      })
+        .populate('property', 'title price address images rentalType leaseTerms')
+        .populate('client', 'firstName lastName email phone')
+        .populate('landlord', 'firstName lastName email phone')
+        .sort({ updatedAt: -1 })
+        .lean();
+
+      for (const app of applications) {
+        const lastRentPayment = await Payment.findOne({
+          application: app._id,
+          type: 'rent',
+          status: 'completed'
+        })
+          .sort({ createdAt: -1 })
+          .select('rentPeriodStart rentPeriodEnd amount currency createdAt')
+          .lean();
+
+        if (!lastRentPayment) continue;
+
+        const leaseMonths = getActualLeaseMonths(app);
+        let rentPeriodStart = lastRentPayment.rentPeriodStart;
+        let rentPeriodEnd = lastRentPayment.rentPeriodEnd;
+        if (!rentPeriodEnd) {
+          const baseDate = app.decision?.leaseStartDate
+            ? new Date(app.decision.leaseStartDate)
+            : (lastRentPayment.createdAt ? new Date(lastRentPayment.createdAt) : new Date());
+          rentPeriodStart = rentPeriodStart || baseDate;
+          const end = new Date(rentPeriodStart);
+          end.setMonth(end.getMonth() + leaseMonths);
+          end.setDate(end.getDate() - 1);
+          rentPeriodEnd = end;
+        }
+
+        const rentExpirationDate = rentPeriodEnd;
+        const now = new Date();
+        const expiresAt = new Date(rentExpirationDate);
+        const daysUntilExpiry = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
+        let status = 'active';
+        if (daysUntilExpiry < 0) status = 'expired';
+        else if (daysUntilExpiry <= 30) status = 'expiring_soon';
+
+        tenancies.push({
+          applicationId: app._id,
+          property: app.property,
+          client: app.client,
+          landlord: app.landlord,
+          rentExpirationDate: rentExpirationDate,
+          rentPeriodStart: rentPeriodStart,
+          rentPeriodEnd: rentPeriodEnd,
+          leaseStartDate: app.decision?.leaseStartDate || rentPeriodStart,
+          leaseEndDate: app.decision?.leaseEndDate || rentPeriodEnd,
+          leaseDurationMonths: leaseMonths,
+          monthlyRent: app.property?.price,
+          lastPaymentAmount: lastRentPayment.amount,
+          currency: lastRentPayment.currency || 'NGN',
+          daysUntilExpiry,
+          status
+        });
+      }
+    } else if (req.user.role === 'admin') {
+      // Admin: all approved/accepted applications with a completed rent payment
+      const applications = await Application.find({
+        status: { $in: ['approved', 'accepted'] }
+      })
+        .populate('property', 'title price address images rentalType leaseTerms')
+        .populate('client', 'firstName lastName email phone')
+        .populate('landlord', 'firstName lastName email phone')
+        .sort({ updatedAt: -1 })
+        .lean();
+
+      for (const app of applications) {
+        const lastRentPayment = await Payment.findOne({
+          application: app._id,
+          type: 'rent',
+          status: 'completed'
+        })
+          .sort({ createdAt: -1 })
+          .select('rentPeriodStart rentPeriodEnd amount currency createdAt')
+          .lean();
+
+        if (!lastRentPayment) continue;
+
+        const leaseMonths = getActualLeaseMonths(app);
+        let rentPeriodStart = lastRentPayment.rentPeriodStart;
+        let rentPeriodEnd = lastRentPayment.rentPeriodEnd;
+        if (!rentPeriodEnd) {
+          const baseDate = app.decision?.leaseStartDate
+            ? new Date(app.decision.leaseStartDate)
+            : (lastRentPayment.createdAt ? new Date(lastRentPayment.createdAt) : new Date());
+          rentPeriodStart = rentPeriodStart || baseDate;
+          const end = new Date(rentPeriodStart);
+          end.setMonth(end.getMonth() + leaseMonths);
+          end.setDate(end.getDate() - 1);
+          rentPeriodEnd = end;
+        }
+
+        const rentExpirationDate = rentPeriodEnd;
+        const now = new Date();
+        const expiresAt = new Date(rentExpirationDate);
+        const daysUntilExpiry = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
+        let status = 'active';
+        if (daysUntilExpiry < 0) status = 'expired';
+        else if (daysUntilExpiry <= 30) status = 'expiring_soon';
+
+        tenancies.push({
+          applicationId: app._id,
+          property: app.property,
+          client: app.client,
+          landlord: app.landlord,
+          rentExpirationDate: rentExpirationDate,
+          rentPeriodStart: rentPeriodStart,
+          rentPeriodEnd: rentPeriodEnd,
+          leaseStartDate: app.decision?.leaseStartDate || rentPeriodStart,
+          leaseEndDate: app.decision?.leaseEndDate || rentPeriodEnd,
+          leaseDurationMonths: leaseMonths,
+          monthlyRent: app.property?.price,
+          lastPaymentAmount: lastRentPayment.amount,
+          currency: lastRentPayment.currency || 'NGN',
+          daysUntilExpiry,
+          status
+        });
+      }
+    } else {
+      return res.status(403).json({ message: 'Invalid user role' });
+    }
+
+    res.json({ tenancies });
+  } catch (error) {
+    console.error('Get tenancies error:', error);
+    res.status(500).json({ message: 'Server error while fetching tenancies' });
+  }
+});
+
 // @route   GET /api/applications/:id
 // @desc    Get single application
 // @access  Private

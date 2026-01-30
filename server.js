@@ -72,9 +72,10 @@ if (process.env.NODE_ENV !== 'production') {
 /* ============================
    🚦 RATE LIMITING
 ============================ */
+// 300 req/15min allows: auth refresh ~15, notifications ~30, chat ~90, plus normal usage
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   skip: req => req.method === 'OPTIONS'
@@ -82,13 +83,11 @@ const apiLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes window
-  max: 20, // Allow 20 requests per 15 minutes (more reasonable for legitimate users)
+  max: 60, // Allow 60 req/15min (session refresh ~15 + login/signup; GET /auth/me is frequent)
   message: 'Too many authentication attempts. Please try again in a few minutes.',
   standardHeaders: true,
   legacyHeaders: false,
-  // Skip rate limiting for successful logins to avoid blocking legitimate users
   skipSuccessfulRequests: false,
-  // Skip rate limiting for failed requests after a certain number (handled by login attempt tracking)
   skipFailedRequests: false
 });
 

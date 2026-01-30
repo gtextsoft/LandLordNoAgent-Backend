@@ -22,6 +22,53 @@ const addDays = (date, days) => {
   return d;
 };
 
+const addMonths = (date, months) => {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + months);
+  return d;
+};
+
+/**
+ * Compute rent period (start, end) for a rent payment.
+ * Uses application preferences and last completed rent payment for the application.
+ */
+async function computeRentPeriod(applicationId, application) {
+  const leaseMonths = application.preferences?.leaseLength
+    ?? application.preferences?.leaseDuration
+    ?? application.property?.leaseTerms?.minLease
+    ?? application.property?.leaseTerms?.maxLease
+    ?? 12;
+  const moveIn = application.preferences?.moveInDate
+    ? new Date(application.preferences.moveInDate)
+    : application.reviewedAt
+      ? new Date(application.reviewedAt)
+      : new Date();
+
+  const lastRent = await Payment.findOne({
+    application: applicationId,
+    type: 'rent',
+    status: 'completed',
+    rentPeriodEnd: { $exists: true, $ne: null }
+  })
+    .sort({ rentPeriodEnd: -1 })
+    .select('rentPeriodEnd')
+    .lean();
+
+  let periodStart;
+  if (lastRent && lastRent.rentPeriodEnd) {
+    periodStart = new Date(lastRent.rentPeriodEnd);
+    // Start next period the day after previous end
+    periodStart.setDate(periodStart.getDate() + 1);
+  } else {
+    periodStart = new Date(moveIn);
+    periodStart.setHours(0, 0, 0, 0);
+  }
+
+  const periodEnd = addMonths(periodStart, leaseMonths);
+  periodEnd.setDate(periodEnd.getDate() - 1); // Last day of period (inclusive end of month)
+  return { periodStart, periodEnd };
+}
+
 const normalizeCurrency = (currency) => {
   if (!currency) return 'NGN';
   return String(currency).toUpperCase();
@@ -66,11 +113,11 @@ async function handleCheckoutSessionCompleted(session) {
     });
     if (existing) return existing;
 
-    // Load application (needed to determine escrow and to infer userId if metadata is missing).
+    // Load application (needed to determine escrow, rent period, and to infer userId if metadata is missing).
     const application = await Application.findById(applicationId)
       .populate('property', 'title rentalType')
       .populate('client', '_id email firstName lastName')
-      .populate('landlord', '_id email firstName lastName');
+      .populate('landlord', '_id email firstName lastName')
 
     if (!application) {
       console.error('handleCheckoutSessionCompleted: application not found', { applicationId, sessionId });
@@ -89,7 +136,22 @@ async function handleCheckoutSessionCompleted(session) {
       application.status === 'accepted';
 
     const escrowExpiresAt = addDays(new Date(), ESCROW_HOLD_DAYS);
-    
+
+    // Compute rent period for rent payments (used for expiration tracking)
+    let rentPeriodStart = null;
+    let rentPeriodEnd = null;
+    if (isRentPayment) {
+      try {
+        const period = await computeRentPeriod(applicationId, application);
+        rentPeriodStart = period.periodStart;
+        rentPeriodEnd = period.periodEnd;
+      } catch (err) {
+        console.error('computeRentPeriod error (using fallback):', err);
+        rentPeriodStart = new Date();
+        rentPeriodEnd = addMonths(new Date(), 1);
+      }
+    }
+
     // Generate payment description
     const paymentDescription = isRentPayment
       ? `Rent payment for property: ${application.property?.title || 'Property'}. Payment will be held in escrow until property visit and document handover.`
@@ -110,6 +172,8 @@ async function handleCheckoutSessionCompleted(session) {
       escrowStatus: isRentPayment ? 'held' : null,
       escrowHeldAt: isRentPayment ? new Date() : null,
       escrowExpiresAt: isRentPayment ? escrowExpiresAt : null,
+      rentPeriodStart: isRentPayment ? rentPeriodStart : undefined,
+      rentPeriodEnd: isRentPayment ? rentPeriodEnd : undefined,
       // Commission is applied when escrow is released (uses PlatformSettings at that time).
       commission_rate: 0,
       commission_amount: 0
