@@ -38,6 +38,7 @@ router.post('/request', verifyToken, authorize('landlord'), async (req, res) => 
     
     res.status(201).json({
       message: 'Payout request created successfully',
+      processingNote: 'For security verification, your payment will be processed within 12 hours.',
       payoutRequest: populatedRequest
     });
   } catch (error) {

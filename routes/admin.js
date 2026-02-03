@@ -913,6 +913,34 @@ router.put('/disputes/:id', async (req, res) => {
   }
 });
 
+// @route   GET /api/admin/landlords/payout-accounts
+// @desc    Get all landlords with payout (bank) account details for admin to process rental payments
+// @access  Private (Admin)
+router.get('/landlords/payout-accounts', async (req, res) => {
+  try {
+    const landlords = await User.find({ role: 'landlord' })
+      .select('_id email firstName lastName kyc isVerified paymentAccount')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const list = landlords.map(u => ({
+      _id: u._id,
+      id: u._id.toString(),
+      email: u.email,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      isVerified: u.isVerified || u.kyc?.status === 'verified',
+      kyc: u.kyc,
+      paymentAccount: u.paymentAccount || {}
+    }));
+
+    res.json({ landlords: list });
+  } catch (error) {
+    console.error('Get landlord payout accounts error:', error);
+    res.status(500).json({ message: 'Server error while fetching landlord payout accounts' });
+  }
+});
+
 // @route   GET /api/admin/users
 // @desc    Get all users with filters
 // @access  Private (Admin)
@@ -1226,6 +1254,47 @@ router.get('/applications', async (req, res) => {
   } catch (error) {
     console.error('Get admin applications error:', error);
     res.status(500).json({ message: 'Server error while fetching applications' });
+  }
+});
+
+// @route   GET /api/admin/stats/payment-summary
+// @desc    Get payment aggregates for dashboard (total revenue, platform commission) from all completed payments.
+//          Commission is split from each payment; for older payments without stored commission we impute using current rate.
+// @access  Private (Admin)
+router.get('/stats/payment-summary', async (req, res) => {
+  try {
+    const settings = await PlatformSettings.getCurrent();
+    const commissionRate = settings && typeof settings.commissionRate === 'number' ? settings.commissionRate : 0.10;
+
+    const [summary] = await Payment.aggregate([
+      { $match: { status: 'completed' } },
+      {
+        $addFields: {
+          // Use stored commission when present and > 0; otherwise impute from amount * current rate (for legacy payments)
+          effectiveCommission: {
+            $cond: [
+              { $gt: [{ $ifNull: ['$commission_amount', 0] }, 0] },
+              '$commission_amount',
+              { $round: [{ $multiply: ['$amount', commissionRate] }, 2] }
+            ]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$amount' },
+          platformCommission: { $sum: '$effectiveCommission' }
+        }
+      }
+    ]);
+    res.json({
+      totalRevenue: summary ? summary.totalRevenue : 0,
+      platformCommission: summary ? summary.platformCommission : 0
+    });
+  } catch (error) {
+    console.error('Get payment summary error:', error);
+    res.status(500).json({ message: 'Server error while fetching payment summary' });
   }
 });
 

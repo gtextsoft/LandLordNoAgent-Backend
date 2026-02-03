@@ -72,11 +72,21 @@ MONGODB_URI=mongodb://localhost:27017/landlord-no-agent
 # JWT Secret
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 
-# Email Configuration (for OTP)
+# Email Configuration (for OTP / verification emails)
+# Option A: Resend (recommended for production; no SMTP ports needed)
+RESEND_API_KEY=re_xxxxxxxxxxxx
+# Optional: custom sender (default: Landlord No Agent <onboarding@resend.dev>)
+# With onboarding@resend.dev you can only send TO the email on your Resend account.
+# To send to any user, verify a domain at https://resend.com/domains and set:
+# EMAIL_FROM=Landlord No Agent <noreply@yourdomain.com>
+
+# Option B: SMTP (e.g. Gmail, Mailtrap). Use if RESEND_API_KEY is not set.
 EMAIL_HOST=smtp.gmail.com
 EMAIL_PORT=587
 EMAIL_USER=your-email@gmail.com
-EMAIL_PASS=your-app-password
+EMAIL_PASSWORD=your-app-password
+
+# At least one of Option A or Option B must be set for verification emails to be sent.
 
 # Stripe Configuration
 STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key

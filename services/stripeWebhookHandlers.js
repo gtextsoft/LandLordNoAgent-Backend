@@ -1,6 +1,7 @@
 const Payment = require('../models/Payment');
 const Application = require('../models/Application');
 const Property = require('../models/Property');
+const commissionService = require('./commissionService');
 const { sendEmail, getUserEmail, getEmailTemplate } = require('../utils/emailNotifications');
 const { createAuditLog } = require('../utils/auditLogger');
 
@@ -157,10 +158,15 @@ async function handleCheckoutSessionCompleted(session) {
       ? `Rent payment for property: ${application.property?.title || 'Property'}. Payment will be held in escrow until property visit and document handover.`
       : `Application fee for property: ${application.property?.title || 'Property'}`;
 
+    // Split commission from amount at creation so dashboard and reports show real figures
+    const amount = (session.amount_total || 0) / 100; // Stripe uses cents
+    const commissionRate = await commissionService.getCurrentCommissionRate();
+    const commissionAmount = commissionService.calculateCommission(amount, commissionRate);
+
     const paymentDoc = {
       application: applicationId,
       user: userId,
-      amount: (session.amount_total || 0) / 100, // Stripe uses cents
+      amount,
       currency: normalizeCurrency(session.currency),
       stripePaymentIntentId: paymentIntentId,
       stripeSessionId: sessionId,
@@ -174,9 +180,8 @@ async function handleCheckoutSessionCompleted(session) {
       escrowExpiresAt: isRentPayment ? escrowExpiresAt : null,
       rentPeriodStart: isRentPayment ? rentPeriodStart : undefined,
       rentPeriodEnd: isRentPayment ? rentPeriodEnd : undefined,
-      // Commission is applied when escrow is released (uses PlatformSettings at that time).
-      commission_rate: 0,
-      commission_amount: 0
+      commission_rate: commissionRate,
+      commission_amount: commissionAmount
     };
 
     // Create the Payment record with an upsert to minimize race conditions.

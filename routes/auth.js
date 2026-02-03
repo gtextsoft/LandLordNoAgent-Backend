@@ -7,10 +7,25 @@ const User = require("../models/User");
 const { generateToken, verifyToken } = require("../middleware/auth");
 const { createAuditLog, getRequestMetadata } = require("../utils/auditLogger");
 
-// Initialize Resend
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+// Initialize Resend (trim key to avoid whitespace issues)
+const resendApiKey = process.env.RESEND_API_KEY?.trim();
+const resend = resendApiKey ? new Resend(resendApiKey) : null;
+
+// Log email config status once at load (helps debug "verification not sent")
+const hasResend = !!resendApiKey;
+const hasSmtp = !!(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASSWORD);
+if (!hasResend && !hasSmtp) {
+  console.warn('⚠️ Email verification: Neither RESEND_API_KEY nor SMTP (EMAIL_HOST/EMAIL_USER/EMAIL_PASSWORD) is set. OTP emails will not be sent.');
+}
 
 const router = express.Router();
+
+// Resend expects "Display Name <email@domain.com>". Normalize plain addresses.
+const getResendFromAddress = () => {
+  const raw = (process.env.EMAIL_FROM || 'noreply@landlordnoagent.com').trim();
+  if (/<[^>]+>/.test(raw)) return raw; // already "Name <email>"
+  return `LandlordNoAgent <${raw}>`;
+};
 
 // Email transporter setup
 const createTransporter = () => {
@@ -39,10 +54,11 @@ const sendOTPEmail = async (email, otp) => {
     // Try Resend API first (works on Render without SMTP ports)
     if (resend) {
       try {
-        console.log('📧 Attempting to send via Resend API...');
+        const fromAddress = getResendFromAddress();
+        console.log('📧 Sending OTP via Resend to', email, 'from', fromAddress);
         const { data, error } = await resend.emails.send({
-          from: process.env.EMAIL_FROM || 'Landlord No Agent <onboarding@resend.dev>',
-          to: email,
+          from: fromAddress,
+          to: Array.isArray(email) ? email : [email],
           subject: "Your OTP for Landlord No Agent",
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -58,14 +74,17 @@ const sendOTPEmail = async (email, otp) => {
         });
 
         if (error) {
+          console.error('❌ Resend API error:', error.name, error.message, error.statusCode != null ? `(status ${error.statusCode})` : '');
+          // 403 often means: using onboarding@resend.dev but sending to an email other than your Resend account email. Verify a domain and set EMAIL_FROM.
           throw new Error(error.message);
         }
 
-        console.log('✅ OTP email sent successfully via Resend:', data?.id);
+        console.log('✅ OTP email sent via Resend:', data?.id);
         return { success: true, messageId: data?.id };
       } catch (resendError) {
         console.error('❌ Resend API failed:', resendError.message);
-        // Fall through to SMTP
+        // Don't fall through to SMTP when using Resend - return so caller knows email wasn't sent
+        return { success: false, error: resendError.message };
       }
     }
 
@@ -174,32 +193,7 @@ router.post("/register", async (req, res) => {
       // Don't fail registration if email fails - just log the OTP
     }
 
-    // Send welcome email (check preferences first)
-    try {
-      const { sendEmail, getEmailTemplate, checkNotificationPreference } = require('../utils/emailNotifications');
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-      
-      // Check if user wants welcome emails (defaults to true for new users)
-      const canSendWelcome = await checkNotificationPreference(user._id, 'welcome');
-      
-      if (canSendWelcome) {
-        const welcomeTemplate = getEmailTemplate('welcome', {
-          name: `${firstName} ${lastName}`.trim() || firstName || email.split('@')[0],
-          role: role,
-          dashboardUrl: `${frontendUrl}/dashboard/${role}`
-        });
-        
-        if (welcomeTemplate) {
-          await sendEmail(email, welcomeTemplate.subject, welcomeTemplate.html, welcomeTemplate.text);
-          console.log(`✅ Welcome email sent to ${email}`);
-        }
-      } else {
-        console.log(`Welcome email skipped for ${email} - user has disabled welcome notifications`);
-      }
-    } catch (welcomeEmailError) {
-      console.error('Error sending welcome email:', welcomeEmailError);
-      // Don't fail registration if welcome email fails
-    }
+    // Welcome email is sent after email verification (see verify-email route)
 
     // Audit log: User registration
     const { ipAddress, userAgent } = getRequestMetadata(req);
@@ -215,9 +209,12 @@ router.post("/register", async (req, res) => {
 
     res.status(201).json({
       message:
-        "User registered successfully. Please verify your email with the OTP sent.",
+        emailResult.success
+          ? "User registered successfully. Please verify your email with the OTP sent."
+          : "User registered. Verification email could not be sent; please use Resend OTP or check your email configuration.",
       userId: user._id,
       email: user.email,
+      verificationEmailSent: !!emailResult.success,
     });
   } catch (error) {
     console.error("Registration error:", error);
@@ -257,6 +254,30 @@ router.post("/verify-email", async (req, res) => {
     user.emailVerificationToken = undefined;
     user.emailVerificationExpires = undefined;
     await user.save();
+
+    // Send welcome email after verification (check preferences first)
+    try {
+      const { sendEmail, getEmailTemplate, checkNotificationPreference } = require('../utils/emailNotifications');
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const userName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.firstName || user.email.split('@')[0];
+      const canSendWelcome = await checkNotificationPreference(user._id, 'welcome');
+      if (canSendWelcome) {
+        const welcomeTemplate = getEmailTemplate('welcome', {
+          name: userName,
+          role: user.role,
+          dashboardUrl: `${frontendUrl}/dashboard/${user.role}`,
+        });
+        if (welcomeTemplate) {
+          await sendEmail(user.email, welcomeTemplate.subject, welcomeTemplate.html, welcomeTemplate.text);
+          console.log(`✅ Welcome email sent to ${user.email} after verification`);
+        }
+      } else {
+        console.log(`Welcome email skipped for ${user.email} - user has disabled welcome notifications`);
+      }
+    } catch (welcomeEmailError) {
+      console.error('Error sending welcome email after verification:', welcomeEmailError);
+      // Don't fail verification if welcome email fails
+    }
 
     // Generate token
     const token = generateToken(user._id);
@@ -323,7 +344,8 @@ router.post("/resend-otp", async (req, res) => {
     }
 
     res.json({
-      message: "OTP sent successfully",
+      message: emailResult.success ? "OTP sent successfully" : "OTP updated but email could not be sent. Check server email configuration (RESEND_API_KEY or EMAIL_*).",
+      verificationEmailSent: !!emailResult.success,
     });
   } catch (error) {
     console.error("Resend OTP error:", error);
@@ -506,7 +528,7 @@ router.post("/forgot-password", async (req, res) => {
 
     // Send reset email – use Resend first (same as OTP), then fall back to SMTP
     const resetUrl = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/auth/reset-password?token=${resetToken}`;
-    const fromAddress = process.env.EMAIL_FROM || 'Landlord No Agent <onboarding@resend.dev>';
+    const fromAddress = getResendFromAddress();
     const logoUrl = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/logo.png`;
 
     const resetEmailHtml = `
