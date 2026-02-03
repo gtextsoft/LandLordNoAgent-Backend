@@ -39,10 +39,10 @@ A comprehensive backend API for the Landlord No Agent platform built with Node.j
    npm install
    ```
 
-<<<<<<< HEAD
 3. **Environment Setup**
    ```bash
-   cp env.local .env
+   cp env.example .env
+   # Or: cp env.local .env
    # Edit .env with your configuration
    ```
 
@@ -54,6 +54,16 @@ A comprehensive backend API for the Landlord No Agent platform built with Node.j
    # Production
    npm start
    ```
+
+5. **Seed data (MVP first content)**  
+   To get an admin user and a verified landlord with sample properties (so the marketplace has visible listings):
+
+   ```bash
+   npm run seed:admin
+   npm run seed:properties
+   ```
+   - `seed:admin` creates an admin user (see console for login details).
+   - `seed:properties` creates a **verified** landlord and verified sample properties. Log in as that landlord with `landlord@example.com` / `password123` or browse as a client to see listings.
 
 ## 🔧 Environment Variables
 
@@ -295,17 +305,6 @@ This project is licensed under the ISC License.
 ## 🆘 Support
 
 For support and questions, please contact the development team or create an issue in the repository.
-=======
-2. **Configure environment variables:**
-   ```bash
-   cp env.example .env
-   # Edit .env with your configuration
-   ```
-
-3. **Start the development server:**
-   ```bash
-   npm run dev
-   ```
 
 ### What You'll See
 
@@ -1048,4 +1047,3 @@ CORS_ORIGIN=http://localhost:3000
 10. Set up monitoring and logging
 
 This comprehensive backend will support all the features visible in the frontend application and provide a solid foundation for the rental property management platform.
->>>>>>> de8eed21a124426eedf0fe71d24c83f38a6359b5

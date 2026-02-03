@@ -21,15 +21,31 @@ async function seedProperties() {
         firstName: 'John',
         lastName: 'Doe',
         phone: '+1234567890',
-        isEmailVerified: true
+        isEmailVerified: true,
+        isVerified: true  // Required for landlord to list properties; allows seeded properties to be visible
       });
       await landlord.save();
-      console.log('Created sample landlord user');
+      console.log('Created sample landlord user (verified)');
+    } else {
+      // Ensure existing seeded landlord is verified so they can list/add properties
+      if (!landlord.isVerified) {
+        landlord.isVerified = true;
+        await landlord.save();
+        console.log('Updated existing landlord to verified');
+      }
     }
 
     // Clear existing properties
     await Property.deleteMany({});
     console.log('Cleared existing properties');
+
+    // Normalize images to schema: [{ url, isPrimary, uploadedAt }]
+    const toImageObjects = (urls) => urls.map((url, i) => ({
+      url,
+      caption: '',
+      isPrimary: i === 0,
+      uploadedAt: new Date()
+    }));
 
     // Create sample properties
     const sampleProperties = [
@@ -44,15 +60,15 @@ async function seedProperties() {
           zipCode: '10001',
           country: 'USA'
         },
-        location: 'Downtown, New York',
-        images: [
+        propertyType: 'apartment',
+        rentalType: 'long-term',
+        images: toImageObjects([
           'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800&h=600&fit=crop',
           'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=800&h=600&fit=crop'
-        ],
+        ]),
         bedrooms: 2,
         bathrooms: 2,
-        area: 1200,
-        propertyType: 'apartment',
+        squareFeet: 1200,
         features: ['Air Conditioning', 'Dishwasher', 'Hardwood Floors', 'Balcony'],
         status: 'active',
         isAvailable: true,
@@ -70,15 +86,15 @@ async function seedProperties() {
           zipCode: '90210',
           country: 'USA'
         },
-        location: 'Suburbs, California',
-        images: [
+        propertyType: 'house',
+        rentalType: 'long-term',
+        images: toImageObjects([
           'https://images.unsplash.com/photo-1570129477492-45c003edd2be?w=800&h=600&fit=crop',
           'https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=800&h=600&fit=crop'
-        ],
+        ]),
         bedrooms: 3,
         bathrooms: 2,
-        area: 1800,
-        propertyType: 'house',
+        squareFeet: 1800,
         features: ['Garage', 'Garden', 'Central Air', 'Fireplace'],
         status: 'active',
         isAvailable: true,
@@ -96,15 +112,15 @@ async function seedProperties() {
           zipCode: '10022',
           country: 'USA'
         },
-        location: 'Manhattan, New York',
-        images: [
+        propertyType: 'condo',
+        rentalType: 'long-term',
+        images: toImageObjects([
           'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=800&h=600&fit=crop',
           'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800&h=600&fit=crop'
-        ],
+        ]),
         bedrooms: 3,
         bathrooms: 3,
-        area: 2500,
-        propertyType: 'penthouse',
+        squareFeet: 2500,
         features: ['City Views', 'Concierge', 'Gym', 'Rooftop Access'],
         status: 'active',
         isAvailable: true,
@@ -122,15 +138,15 @@ async function seedProperties() {
           zipCode: '60601',
           country: 'USA'
         },
-        location: 'Downtown, Chicago',
-        images: [
+        propertyType: 'studio',
+        rentalType: 'long-term',
+        images: toImageObjects([
           'https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=800&h=600&fit=crop',
           'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=800&h=600&fit=crop'
-        ],
+        ]),
         bedrooms: 1,
         bathrooms: 1,
-        area: 800,
-        propertyType: 'studio',
+        squareFeet: 800,
         features: ['High Ceilings', 'Exposed Brick', 'Modern Kitchen', 'Walk-in Closet'],
         status: 'active',
         isAvailable: true,
@@ -148,15 +164,15 @@ async function seedProperties() {
           zipCode: '73301',
           country: 'USA'
         },
-        location: 'Suburbs, Texas',
-        images: [
+        propertyType: 'townhouse',
+        rentalType: 'long-term',
+        images: toImageObjects([
           'https://images.unsplash.com/photo-1568605114967-8130f3a36994?w=800&h=600&fit=crop',
           'https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=800&h=600&fit=crop'
-        ],
+        ]),
         bedrooms: 4,
         bathrooms: 2,
-        area: 2000,
-        propertyType: 'townhouse',
+        squareFeet: 2000,
         features: ['Backyard', 'Playground', 'Good Schools', 'Parking'],
         status: 'active',
         isAvailable: true,
@@ -174,15 +190,15 @@ async function seedProperties() {
           zipCode: '33139',
           country: 'USA'
         },
-        location: 'Miami Beach, Florida',
-        images: [
+        propertyType: 'condo',
+        rentalType: 'long-term',
+        images: toImageObjects([
           'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=800&h=600&fit=crop',
           'https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=800&h=600&fit=crop'
-        ],
+        ]),
         bedrooms: 2,
         bathrooms: 2,
-        area: 1500,
-        propertyType: 'condo',
+        squareFeet: 1500,
         features: ['Ocean View', 'Balcony', 'Pool Access', 'Beach Access'],
         status: 'active',
         isAvailable: true,
