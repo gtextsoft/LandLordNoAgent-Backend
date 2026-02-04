@@ -76,17 +76,65 @@ router.post('/upload-kyc', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'Documents array is required' });
     }
 
+    if (documents.length === 0) {
+      return res.status(400).json({ message: 'At least one document is required' });
+    }
+
     const user = await User.findById(req.user._id);
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Add new documents to KYC
-    user.kyc.documents.push(...documents.map(doc => ({
-      type: doc.type,
-      url: doc.url,
-      status: 'pending'
-    })));
+    // Initialize kyc object if it doesn't exist
+    if (!user.kyc) {
+      user.kyc = {
+        status: null,
+        documents: []
+      };
+    }
+
+    // Initialize documents array if it doesn't exist
+    if (!user.kyc.documents || !Array.isArray(user.kyc.documents)) {
+      user.kyc.documents = [];
+    }
+
+    // Map frontend document types to backend types (support both formats)
+    const mapDocumentType = (type) => {
+      const typeMap = {
+        'idDocument': 'idDocument',
+        'id': 'id',
+        'proofOfAddress': 'proofOfAddress',
+        'proof_of_address': 'proof_of_address',
+        'employmentLetter': 'employmentLetter',
+        'income_proof': 'income_proof',
+        'bankStatement': 'bankStatement'
+      };
+      return typeMap[type] || type;
+    };
+
+    // Validate and prepare documents
+    const validDocuments = documents
+      .filter(doc => doc.url && doc.type) // Only include documents with URL and type
+      .map(doc => ({
+        type: mapDocumentType(doc.type),
+        url: doc.url,
+        status: 'pending',
+        uploadedAt: new Date()
+      }));
+
+    if (validDocuments.length === 0) {
+      return res.status(400).json({ message: 'No valid documents provided. Each document must have a type and URL.' });
+    }
+
+    // Add new documents to KYC (replace existing documents of the same type)
+    validDocuments.forEach(newDoc => {
+      // Remove existing document of the same type
+      user.kyc.documents = user.kyc.documents.filter(
+        existingDoc => existingDoc.type !== newDoc.type
+      );
+      // Add the new document
+      user.kyc.documents.push(newDoc);
+    });
 
     // Set KYC status to pending ONLY when documents are uploaded (user has applied for KYC)
     // Don't set if already verified or rejected (unless user is resubmitting)
@@ -135,7 +183,14 @@ router.post('/upload-kyc', verifyToken, async (req, res) => {
 
   } catch (error) {
     console.error('Upload KYC error:', error);
-    res.status(500).json({ message: 'Server error while uploading KYC documents' });
+    // Provide more detailed error information in development
+    const errorMessage = process.env.NODE_ENV === 'development' 
+      ? `Server error while uploading KYC documents: ${error.message}`
+      : 'Server error while uploading KYC documents';
+    res.status(500).json({ 
+      message: errorMessage,
+      ...(process.env.NODE_ENV === 'development' && { error: error.stack })
+    });
   }
 });
 
@@ -290,7 +345,13 @@ router.get('/by-email', verifyToken, authorize('admin'), async (req, res) => {
       return res.status(404).json({ message: 'User not found', user: null });
     }
 
-    res.json({ user });
+    // Normalize for frontend (same shape as /auth/me)
+    const userData = user.toObject ? user.toObject() : user;
+    userData.id = userData._id;
+    userData.is_verified = user.isVerified || user.kyc?.status === 'verified';
+    userData.created_at = userData.createdAt || userData.created_at;
+
+    res.json({ user: userData });
   } catch (error) {
     console.error('Get user by email error:', error);
     res.status(500).json({ message: 'Server error while fetching user' });

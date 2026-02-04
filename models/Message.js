@@ -137,7 +137,7 @@ messageSchema.statics.getConversation = function(applicationId, page = 1, limit 
     .populate('sender', 'firstName lastName avatar')
     .populate('receiver', 'firstName lastName avatar')
     .populate('attachments')
-    .sort({ sentAt: -1 })
+    .sort({ sentAt: 1 })
     .skip(skip)
     .limit(limit);
 };

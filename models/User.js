@@ -56,7 +56,7 @@ const userSchema = new mongoose.Schema({
     documents: [{
       type: {
         type: String,
-        enum: ['id', 'proof_of_address', 'income_proof']
+        enum: ['id', 'idDocument', 'proof_of_address', 'proofOfAddress', 'income_proof', 'employmentLetter', 'bankStatement']
       },
       url: String,
       status: {

@@ -393,7 +393,12 @@ router.post('/client',
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({ success: false, errors: errors.array() });
+        const firstMsg = errors.array()[0]?.msg || 'Validation failed';
+        return res.status(400).json({
+          success: false,
+          message: firstMsg,
+          errors: errors.array()
+        });
       }
 
       const { clientId, propertyId, applicationId, rating, title, comment } = req.body;

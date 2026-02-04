@@ -506,11 +506,11 @@ router.post("/forgot-password", async (req, res) => {
       });
     }
 
-    // Generate reset token
-    const resetToken = crypto.randomBytes(32).toString("hex");
+    // Generate 6-digit reset code (no link – user enters code on reset page)
+    const resetCode = String(Math.floor(100000 + Math.random() * 900000));
     const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    user.passwordResetToken = resetToken;
+    user.passwordResetToken = resetCode;
     user.passwordResetExpires = resetExpires;
     await user.save();
 
@@ -526,29 +526,31 @@ router.post("/forgot-password", async (req, res) => {
       userAgent
     });
 
-    // Send reset email – use Resend first (same as OTP), then fall back to SMTP
-    const resetUrl = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/auth/reset-password?token=${resetToken}`;
+    const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const resetPageUrl = `${frontendUrl}/auth/reset-password`;
     const fromAddress = getResendFromAddress();
-    const logoUrl = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/logo.png`;
+    const logoUrl = `${frontendUrl}/logo.png`;
+    const firstName = user.firstName || 'User';
 
     const resetEmailHtml = `
       <!DOCTYPE html>
       <html>
-      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Password Reset</title></head>
+      <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Password Reset Code</title></head>
       <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f8fafc;">
         <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
           <div style="background: linear-gradient(135deg, #249479 0%, #1d4ed8 100%); padding: 40px 20px; text-align: center;">
             <img src="${logoUrl}" alt="LandLordNoAgent" style="max-width: 200px; height: auto; margin-bottom: 15px;" />
-            <h1 style="color: #fff; margin: 0; font-size: 28px; font-weight: bold;">Password Reset</h1>
+            <h1 style="color: #fff; margin: 0; font-size: 28px; font-weight: bold;">Password Reset Code</h1>
             <p style="color: #e0e7ff; margin: 8px 0 0 0; font-size: 16px;">LandLordNoAgent</p>
           </div>
           <div style="padding: 40px 30px;">
-            <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">Reset Your Password</h2>
-            <p style="color: #6b7280; line-height: 1.6;">You requested a password reset for your account. Click the button below to set a new password.</p>
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${resetUrl}" style="display: inline-block; background-color: #249479; color: #fff; text-decoration: none; padding: 16px 32px; border-radius: 8px; font-weight: bold; font-size: 16px;">Reset Password</a>
+            <h2 style="color: #1f2937; margin: 0 0 20px 0; font-size: 24px;">Your reset code</h2>
+            <p style="color: #6b7280; line-height: 1.6;">Hi ${firstName}, you requested a password reset. Use this code on the reset password page:</p>
+            <div style="text-align: center; margin: 28px 0; padding: 24px; background: #f1f5f9; border-radius: 8px;">
+              <span style="font-size: 32px; font-weight: bold; letter-spacing: 0.2em; color: #1f2937;">${resetCode}</span>
             </div>
-            <p style="color: #6b7280; font-size: 14px;">This link expires in 1 hour. If you didn't request this, please ignore this email.</p>
+            <p style="color: #6b7280; line-height: 1.6;">Go to the reset password page, enter this code and your email, then set a new password.</p>
+            <p style="color: #6b7280; font-size: 14px;">This code expires in 1 hour. If you didn't request this, please ignore this email.</p>
           </div>
           <div style="background-color: #f8fafc; padding: 20px; text-align: center; border-top: 1px solid #e5e7eb;">
             <p style="color: #6b7280; font-size: 14px; margin: 0;">© ${new Date().getFullYear()} LandLordNoAgent. All rights reserved.</p>
@@ -558,6 +560,8 @@ router.post("/forgot-password", async (req, res) => {
       </html>
     `;
 
+    const resetEmailText = `Your password reset code is: ${resetCode}\n\nGo to ${resetPageUrl} and enter this code with your email to set a new password. This code expires in 1 hour. If you didn't request this, please ignore this email.`;
+
     let emailSent = false;
 
     if (resend) {
@@ -565,13 +569,13 @@ router.post("/forgot-password", async (req, res) => {
         const { data, error } = await resend.emails.send({
           from: fromAddress,
           to: email,
-          subject: 'Password Reset - LandLordNoAgent',
+          subject: 'Password Reset Code - LandLordNoAgent',
           html: resetEmailHtml,
-          text: `Reset your password: ${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, please ignore this email.`,
+          text: resetEmailText,
         });
         if (error) throw new Error(error.message);
         emailSent = true;
-        console.log('✅ Password reset email sent via Resend:', data?.id);
+        console.log('✅ Password reset code email sent via Resend:', data?.id);
       } catch (resendErr) {
         console.error('❌ Resend password reset failed:', resendErr.message);
       }
@@ -583,11 +587,12 @@ router.post("/forgot-password", async (req, res) => {
         await transporter.sendMail({
           from: process.env.EMAIL_USER,
           to: email,
-          subject: 'Password Reset - LandLordNoAgent',
+          subject: 'Password Reset Code - LandLordNoAgent',
           html: resetEmailHtml,
+          text: resetEmailText,
         });
         emailSent = true;
-        console.log('✅ Password reset email sent via SMTP');
+        console.log('✅ Password reset code email sent via SMTP');
       } catch (smtpErr) {
         console.error('❌ SMTP password reset failed:', smtpErr.message);
       }
@@ -612,26 +617,37 @@ router.post("/forgot-password", async (req, res) => {
 });
 
 // @route   POST /api/auth/reset-password
-// @desc    Reset password with token
+// @desc    Reset password with email + code
 // @access  Public
 router.post("/reset-password", async (req, res) => {
   try {
-    const { token, password } = req.body;
+    const { email, token, password } = req.body;
+    const code = (token || '').toString().trim();
 
-    if (!token || !password) {
+    if (!password) {
       return res.status(400).json({
-        message: "Token and password are required",
+        message: "Password is required",
       });
     }
 
-    const user = await User.findOne({
-      passwordResetToken: token,
-      passwordResetExpires: { $gt: Date.now() },
-    });
+    // Require either (email + code) or code-only for backward compatibility
+    let user = null;
+    if (email && code) {
+      user = await User.findOne({
+        email: email.toLowerCase(),
+        passwordResetToken: code,
+        passwordResetExpires: { $gt: Date.now() },
+      });
+    } else if (code) {
+      user = await User.findOne({
+        passwordResetToken: code,
+        passwordResetExpires: { $gt: Date.now() },
+      });
+    }
 
     if (!user) {
       return res.status(400).json({
-        message: "Invalid or expired reset token",
+        message: "Invalid or expired reset code. Please request a new code.",
       });
     }
 

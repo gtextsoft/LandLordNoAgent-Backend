@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "build": "node scripts/validate.js",
     "check": "node --check server.js",
     "seed:admin": "node seed-admin.js",
     "seed:properties": "node seed-properties.js",
